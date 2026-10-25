@@ -3,8 +3,7 @@
 把 [fqapp](https://github.com/ch6vip/fqapp) 的后端（Rust 核心）移植为**独立 HTTP 服务**，
 让前端可以多平台复用、前后端分离、并接入第三方工具。
 
-当前状态：**Phase 3 完成**（骨架移植 + HTTP 服务壳 + 数据目录与设备池 + 媒体）。
-业务代码 95% 原样搬自上游。
+当前状态：**v0.1.0**。后端功能完整、可部署；业务代码 95% 原样搬自上游。
 
 ## 快速开始
 
@@ -175,6 +174,7 @@ docs/
   API.md                 # 46 个端点、57 条路径的接口手册
   backend-analysis.md    # 上游后端逻辑分析
   PORTING-ANALYSIS.md    # 移植方案、接口设计、阶段计划
+  CLIENT-MIGRATION.md    # 前端怎么从 FFI 换成 HTTP（方案与工作量）
   UPSTREAM.md            # 上游 commit + 偏离清单 + 验证记录（GPL-3.0 §5(a) 声明）
 ```
 
@@ -205,7 +205,7 @@ api.media_url("/src/img_abc.jpg")   # 自动带上 ?token=
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                      # 225 passed
+cargo test --workspace                      # 240 passed
 python scripts/check_api_doc.py             # docs/API.md 与源码一致
 python clients/python/e2e.py                # 真二进制 + 模拟上游 + 客户端
 ```
@@ -223,9 +223,13 @@ CI（`.github/workflows/ci.yml`）跑五道门槛：fmt+clippy、cargo test、�
 
 - 默认的视频路径会**在服务端缓存解密后的整集**（`<data-dir>/src`，512 MiB 上限）。
   如果不想让服务端持有明文内容，让客户端改用 `?mode=stream`。
-- 只有文件日志（`<data-dir>/rust.log`），stdout 结构化日志在 Phase 4。
-- 单实例设计。多实例会各自注册设备，上游看到 N 倍注册量，更容易触发风控。
+- **单实例设计。** 多实例会各自注册设备，上游看到 N 倍注册量，更容易触发风控。
 - 池里 5–20 个身份共享同一个出口 IP，比单设备更容易被风控识别。适合个人或小团队。
+- **上游随时可能改协议或轮换签名密钥**，届时只能更新本项目。失效时要改的常量清单在
+  `docs/UPSTREAM.md` §6。
+- 两条路由在上游就没有实现，调用会返回 `404 unsupported api type`：
+  `/api/v1/search/suggest`（联想词）、`/api/v1/articles/{id}`。
+- 分发二进制或镜像受 GPL-3.0 约束：必须同时提供对应源码。
 
 ## 文档导航
 
