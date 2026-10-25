@@ -49,11 +49,17 @@ pub struct LoopbackHandle {
 /// `Lan` binds every interface so another machine on the same network can
 /// reach the read routes; the Host/Origin guard widens with it (see
 /// [`is_own_authority`]).
+///
+/// `Disabled` exists for hosts that publish the dispatcher over their own
+/// listener. The loopback adapter is not merely redundant there: its read
+/// routes answer any local client without a capability, so on a shared host it
+/// would be an unauthenticated side door next to the public, authenticated one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ListenMode {
     #[default]
     Loopback,
     Lan,
+    Disabled,
 }
 
 #[derive(Clone)]
@@ -73,6 +79,10 @@ pub async fn serve(
     let addr = match mode {
         ListenMode::Loopback => "127.0.0.1",
         ListenMode::Lan => "0.0.0.0",
+        // `Disabled` never reaches `serve`: `init_core` skips the listener for
+        // it. Getting here means a caller asked for both a listener and no
+        // listener, which is a programming error rather than a runtime state.
+        ListenMode::Disabled => return Err("listener is disabled".to_string()),
     };
     let listener = tokio::net::TcpListener::bind((addr, port))
         .await

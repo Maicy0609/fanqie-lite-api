@@ -494,6 +494,17 @@ impl DevicePool {
         self.state.lock().await.devices.len()
     }
 
+    /// Writes the current pool state now.
+    ///
+    /// `save` is otherwise only reached from mutations, which leaves one gap a
+    /// server cares about: a pool file written before a key was provisioned
+    /// stays plaintext until the next device rotates, so the secrets sit
+    /// unencrypted for as long as the host is idle. A caller that has just
+    /// provisioned a key uses this to migrate the file immediately.
+    pub async fn persist(&self) -> Result<(), String> {
+        self.save().await
+    }
+
     /// Manually adds `count` devices to the pool.
     pub async fn refill(&self, count: usize) -> Result<(), String> {
         let _maintenance = self.maintenance_lock.lock().await;

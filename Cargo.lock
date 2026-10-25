@@ -301,7 +301,9 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "fqapi_core",
+ "hex",
  "log",
+ "rand",
  "reqwest",
  "rustls",
  "serde_json",

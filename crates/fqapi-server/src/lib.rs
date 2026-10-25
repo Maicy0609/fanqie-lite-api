@@ -13,3 +13,4 @@ pub mod auth;
 pub mod config;
 pub mod health;
 pub mod http;
+pub mod poolkey;

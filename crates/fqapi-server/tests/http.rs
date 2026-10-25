@@ -6,6 +6,7 @@
 //! or process-global state - which is also why these tests can run in parallel.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,13 +52,16 @@ impl Harness {
     }
 }
 
+/// Test directories must be unique per *call*, not per timestamp: eight tests
+/// start at once, and `SystemTime::now()` on Windows does not have the
+/// resolution to tell them apart. Colliding directories made one test's
+/// cleanup delete another's files mid-run.
+static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
+
 fn temp_dir(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+    let n = DIR_SEQ.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!(
-        "fqapi-server-http-{tag}-{}-{nanos}",
+        "fqapi-server-http-{tag}-{}-{n}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);

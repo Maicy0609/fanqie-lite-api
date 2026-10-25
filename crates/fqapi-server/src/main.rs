@@ -3,10 +3,14 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
+use fqapi_core::device::{DevicePool, MIN_POOL_SIZE};
 use fqapi_core::runtime;
+use fqapi_core::server::ListenMode;
 use fqapi_server::config::{self, Config, ParseOutcome};
 use fqapi_server::http::{router, AppState};
+use fqapi_server::poolkey;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -39,21 +43,50 @@ async fn run() -> Result<(), String> {
 
     let paths = prepare_data_dir(&cfg)?;
 
-    // Port 0 keeps the core's loopback adapter on an ephemeral port: the
-    // public listener below is the only surface this process should expose.
-    // See docs/UPSTREAM.md - removing that adapter is a Phase 2 item.
-    runtime::init(
+    // Before `init`, so the pool reads an encrypted file on its first load and
+    // writes one on its first save.
+    let pool_key = poolkey::load_or_create(
+        &cfg.data_dir,
+        &paths.pool,
+        std::env::var("FQ_POOL_KEY").ok(),
+    )?;
+    runtime::set_device_pool_key(pool_key.to_vec())?;
+    // A pool file written before the key existed is still plaintext, and
+    // `save` only migrates it on the next mutation - which an idle host may
+    // never reach.
+    let migrate_pool = poolkey::needs_migration(&paths.pool);
+
+    // `Disabled`: this process is the only listener. The loopback adapter's
+    // read routes answer any local client without a token, which would be a
+    // side door next to the authenticated public listener.
+    runtime::init_core(
         paths.config.to_string_lossy().into_owned(),
         paths.pool.to_string_lossy().into_owned(),
         paths.filter.to_string_lossy().into_owned(),
         cfg.data_dir.to_string_lossy().into_owned(),
         0,
-        false,
-        cfg.upstream_origin.clone(),
+        ListenMode::Disabled,
+        if cfg.upstream_origin.trim().is_empty() {
+            None
+        } else {
+            Some(cfg.upstream_origin.clone())
+        },
     )
     .await?;
 
     let server = runtime::server().await.ok_or("the core did not start")?;
+    if migrate_pool {
+        server
+            .ctx
+            .pool
+            .persist()
+            .await
+            .map_err(|e| format!("encrypt the existing device pool: {e}"))?;
+    }
+    // Fill the pool without waiting for the first request, so `/readyz` flips
+    // on its own. Registration takes seconds per device, so this must not block
+    // startup.
+    let warm_up = tokio::spawn(warm_up(server.ctx.pool.clone()));
     let app = router(AppState::from_config(server, &cfg))?;
 
     let listener = tokio::net::TcpListener::bind(cfg.listen)
@@ -73,11 +106,30 @@ async fn run() -> Result<(), String> {
         .await
         .map_err(|e| format!("serve: {e}"))?;
 
+    // A warm-up still in flight would otherwise keep registering devices while
+    // the pool is being retired.
+    warm_up.abort();
     // Waits for an in-flight device-pool commit before returning, so a restart
     // cannot race a rename that is already queued.
     runtime::shutdown().await?;
     eprintln!("fqapi-server stopped");
     Ok(())
+}
+
+/// Tops the pool up to its minimum. The core does the same on every `get`, so
+/// this only exists to make readiness independent of traffic.
+///
+/// `refill(n)` means "add up to n devices", not "reach n", so the deficit has
+/// to be computed here: passing `MIN_POOL_SIZE` on a healthy pool would keep
+/// registering devices until it hit the maximum.
+async fn warm_up(pool: Arc<DevicePool>) {
+    let missing = MIN_POOL_SIZE.saturating_sub(pool.count().await);
+    if missing == 0 {
+        return;
+    }
+    if let Err(error) = pool.refill(missing).await {
+        log::warn!("device pool warm-up incomplete: {error}");
+    }
 }
 
 struct Paths {

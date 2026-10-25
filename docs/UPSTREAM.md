@@ -70,25 +70,30 @@ Phase 0 的目标是"骨架，不改行为"。因此偏离只有"删掉不存在
 
 ### 3.3 修改的文件
 
-| 文件 | 改动 | 行为影响 |
-|---|---|---|
-| `src/lib.rs` | 删 `mod frb_generated;`、`#[cfg(target_os = "windows")] mod desktop_media;`；`pub mod api` → `pub mod runtime`；文档注释改写 | 无 |
-| `src/runtime/mod.rs` | ① 模块文档改写；② `set_device_pool_key` 文档改写（同时修掉上游"Backend core version."的错位文档）；③ `init` 中 `core_log::install` 去掉 `#[cfg(target_os = "android")]` 门禁；④ 新增 `pub async fn server() -> Option<Arc<Server>>`（9 行，含文档） | **有**：非 Android 构建现在也会写 `rust.log`；④ 只是暴露既有字段，不改变行为 |
-| `src/core_log.rs` | 删 `android_logger` 分支：`LOGCAT_TAG` 常量、`CoreLogger.android` 字段、`new()` 中的初始化、`log()` 中的镜像、`flush()` 中的转发；文档注释同步 | **有**：不再镜像到 logcat（服务端没有 logcat） |
-| `Cargo.toml` | 删 `flutter_rust_bridge`、`android_logger`、`[build-dependencies] cc`、`[target.'cfg(windows)'.dependencies] reqwest/blocking`；`crate-type` 改为 `["rlib"]` | 无 |
-| 根 `Cargo.toml` | 新增 workspace；`[profile.*]` 从成员清单移到根（Cargo 只认根 profile） | 无 |
+| 阶段 | 文件 | 改动 | 行为影响 |
+|---|---|---|---|
+| 0 | `src/lib.rs` | 删 `mod frb_generated;`、`#[cfg(target_os = "windows")] mod desktop_media;`；`pub mod api` → `pub mod runtime`；文档注释改写 | 无 |
+| 0 | `src/runtime/mod.rs` | ① 模块文档改写；② `set_device_pool_key` 文档改写（同时修掉上游"Backend core version."的错位文档）；③ `init` 中 `core_log::install` 去掉 `#[cfg(target_os = "android")]` 门禁 | **有**：非 Android 构建现在也会写 `rust.log` |
+| 1 | `src/runtime/mod.rs` | ④ 新增 `pub async fn server() -> Option<Arc<Server>>`（9 行，含文档）。`request()` 会把响应体读进内存且上限 64 MiB，`/src/*` 媒体必须流式 | 无（只暴露既有字段） |
+| 2 | `src/runtime/mod.rs` | ⑤ `init_core` 由 `pub(crate)` 改为 `pub`，并按 `ListenMode::Disabled` 跳过监听；⑥ 日志安装从 `init` 移进 `init_core`（否则直接调 `init_core` 的调用方拿不到任何日志） | 无（`init` 行为不变） |
+| 2 | `src/server.rs` | 新增 `ListenMode::Disabled` 变体；`serve()` 对该变体返回错误（正常路径不会到达） | 无 |
+| 2 | `src/device/mod.rs` | 新增 `pub async fn persist()`（3 行）：显式触发一次 `save`，用于密钥刚就绪时立刻把明文池迁移成加密 | 无（只是把 `save` 暴露出来） |
+| 0 | `src/core_log.rs` | 删 `android_logger` 分支：`LOGCAT_TAG` 常量、`CoreLogger.android` 字段、`new()` 中的初始化、`log()` 中的镜像、`flush()` 中的转发；文档注释同步 | **有**：不再镜像到 logcat（服务端没有 logcat） |
+| 0 | `Cargo.toml` | 删 `flutter_rust_bridge`、`android_logger`、`[build-dependencies] cc`、`[target.'cfg(windows)'.dependencies] reqwest/blocking`；`crate-type` 改为 `["rlib"]` | 无 |
+| 0 | 根 `Cargo.toml` | 新增 workspace；`[profile.*]` 从成员清单移到根（Cargo 只认根 profile） | 无 |
 
 ### 3.4 零改动的文件（逐字节一致）
 
 ```
 src/config.rs          src/dispatch.rs       src/error.rs
 src/crypto.rs          src/filter.rs         src/json.rs
-src/server.rs          src/static_files.rs   src/timeutil.rs
-src/device/**          src/endpoints/**      src/sign/**
-src/upstream/**        tests/**              testdata/**
+src/static_files.rs    src/timeutil.rs
+src/endpoints/**       src/sign/**           src/upstream/**
+tests/**               testdata/**
 ```
 
-合计 18,085 行中的 17,600+ 行未经修改。
+Phase 0 时 47 个源文件逐字节一致；Phase 2 之后 `server.rs` 与 `device/mod.rs` 各有一处
+小改动，降为 45 个。`endpoints/`（约 12,000 行）与 `sign/`（约 1,300 行）始终未动。
 
 ---
 
@@ -100,10 +105,11 @@ src/upstream/**        tests/**              testdata/**
 |---|---|---|
 | 严格编译 | `cargo check --all-targets` | 通过，零警告 |
 | 严格 lint | `cargo clippy --all-targets -- -D warnings` | 通过 |
-| 全量测试 | `cargo test` | **209 passed / 0 failed**（core 182 + server 27） |
+| 全量测试 | `cargo test --workspace` | **216 passed / 0 failed**（core 182 + server 34），连续三轮一致 |
 | 测试资产一致性 | 见下方脚本 | 19 个文件逐字节一致 |
-| 未改动源码一致性 | 见下方脚本 | 47 个文件逐字节一致 |
+| 未改动源码一致性 | 见下方脚本 | 45 个文件逐字节一致 |
 | 真实上游端到端 | 见 §4.2 | 搜索、目录均返回真实数据 |
+| 加密与监听 | 见 §4.3 | 明文池启动即加密；只有一个监听端口 |
 
 一致性检查必须比对**上游仓库内容**，不能比对上游工作树：Windows 上
 `core.autocrlf=true` 会把上游 checkout 成 CRLF，直接 `diff -r` 会得到满屏假差异。
@@ -117,10 +123,10 @@ for f in $(find tests testdata -type f | sort); do
   git -C /path/to/fqapp show "HEAD:rust/$f" | cmp -s - "$f" || echo "DIFF: $f"
 done
 
-# 未改动源码：应输出 47 个文件、无 DIFF
+# 未改动源码：应输出 45 个文件、无 DIFF
 for f in $(find src -name '*.rs' | sort); do
   rel=${f#src/}
-  case "$rel" in runtime/mod.rs|core_log.rs|lib.rs) continue;; esac
+  case "$rel" in runtime/mod.rs|core_log.rs|lib.rs|server.rs|device/mod.rs) continue;; esac
   git -C /path/to/fqapp show "HEAD:rust/src/$rel" | cmp -s - "$f" || echo "DIFF: $rel"
 done
 ```
@@ -141,7 +147,7 @@ fqapi_core  unittests (src/lib.rs)   80
             router_contract           2
             static_and_loopback      17
             video_codec_gate          9
-fqapi_server unittests (lib)         16
+fqapi_server unittests (lib)         23
              unittests (main)         2
              tests/http.rs            9
 ```
@@ -166,22 +172,50 @@ fqapi_server unittests (lib)         16
 `saving device pool unencrypted: no pool key provisioned` 警告），里面是 5 个真实设备的
 `secret_key`。这是 Phase 2 的第一项，在完成前**不适合部署到任何真实环境**。
 
+### 4.3 Phase 2 端到端（离线，不访问上游）
+
+2026-10-25，用一个预置了 5 个**明文**设备的池启动服务端：
+
+| 检查 | 结果 |
+|---|---|
+| `pool.key` 自动生成 | 64 个 hex 字符 |
+| 启动后池文件头部 | `FQPOOL1`（明文已被迁移为加密） |
+| 该进程的监听端口 | 只有 `--listen` 指定的一个（隐藏的 loopback 适配器已不再启动） |
+| `rust.log` | `core init: port=0 mode=Disabled` |
+| 明文池的告警 | 无（密钥已就绪，不再走明文分支） |
+| `GET /readyz` | `200 {"devices":5}` |
+| 删掉 `pool.key` 再启动 | 退出码 1，提示 "encrypted but no key is available…" |
+
+最后一项是刻意设计的：密钥缺失时**拒绝启动**，而不是悄悄生成新密钥。新密钥打不开旧池，
+池会以空状态加载，然后重新注册 5 个设备——旧身份就永久丢了。
+
 ---
 
-## 5. 待办偏离（Phase 2 及以后）
+## 5. 待办偏离（Phase 3 及以后）
 
 按 `docs/PORTING-ANALYSIS.md` 的计划，以下改动尚未实施。每实施一项，**必须**在 §3 追加记录。
 
 | # | 内容 | 阶段 | 状态 |
 |---|---|---|---|
-| 1 | `device/mod.rs::get()` / `get_by_id()` 的写盘改为脏标记 + 后台 flush | Phase 2 | 待办 |
-| 2 | 公开监听层（鉴权 / CORS / 限流 / 探针） | Phase 1 | **已完成**，见 `crates/fqapi-server`（未改 `server.rs`，另建传输层） |
-| 3 | 设备池 key 来源改为 `<data-dir>/pool.key` | Phase 2 | 待办（**部署前必须完成**，当前为明文） |
+| 1 | `device/mod.rs::get()` / `get_by_id()` 的写盘改为脏标记 + 后台 flush | — | **不做（撤回）**，理由见下 |
+| 2 | 公开监听层（鉴权 / CORS / 限流 / 探针） | Phase 1 | **已完成**，见 `crates/fqapi-server`（未改 `server.rs` 的既有行为） |
+| 3 | 设备池 key 来源改为 `<data-dir>/pool.key` | Phase 2 | **已完成**，见 §4.3 |
 | 4 | 媒体代理模式（可选，`--media-proxy`） | Phase 3 | 待办 |
 | 5 | `core_log` 增加 stdout 输出 | Phase 4 | 待办 |
 | 6 | `error.rs` 增加可选 `code` 字段 | 延后 | 暂无消费方，避免加入未被使用的抽象 |
-| 7 | `video.rs::handle_pseries` 的 `eprintln!` 改为 `log::warn!` | **不做** | 上游那样写是因为 Android 没有控制台；服务端 stderr 本来就会被采集，改它只是徒增偏离面 |
-| 8 | `runtime::init` 支持不启动 loopback 适配器 | Phase 2 | 待办（当前用 port 0 挂一个用不到的临时监听） |
+| 7 | `video.rs::handle_pseries` 的 `eprintln!` 改为 `log::warn!` | — | **不做**：上游那样写是因为 Android 没有控制台；服务端 stderr 本来就会被采集 |
+| 8 | 让初始化支持不启动 loopback 适配器 | Phase 2 | **已完成**（`ListenMode::Disabled`），见 §4.3 |
+
+**为什么撤回第 1 项。** 我最初把它列为"必修"，理由是"每个请求写一次盘"。复核后这个
+判断站不住：
+
+- 池文件 5–20 个设备约 5 KB，`save()` 没有 `fsync`，只是一次页缓存写 + rename；
+- 每个请求真正的耗时是上游 HTTP 往返（几十到几百毫秒），写盘占比不到 1%；
+- 改它必须修改上游测试 `concurrent_gets_do_not_corrupt_the_pool_file`（它断言
+  `get()` 之后文件里的 `use_count >= 1`），而"测试零改动"是判断移植是否忠实的主要依据。
+
+用扩大偏离面 + 改上游测试，去换一个在真实负载下测不出来的收益，不划算。如果将来压测
+证明它是瓶颈，再按脏标记 + 后台 flush 重做，并同步更新该测试。
 
 **明确不做**（登记为技术债，不在移植期清理）：
 

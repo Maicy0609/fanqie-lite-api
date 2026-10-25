@@ -3,7 +3,8 @@
 把 [fqapp](https://github.com/ch6vip/fqapp) 的后端（Rust 核心）移植为**独立 HTTP 服务**，
 让前端可以多平台复用、前后端分离、并接入第三方工具。
 
-当前状态：**Phase 1 完成**（骨架移植 + HTTP 服务壳）。业务代码 95% 原样搬自上游。
+当前状态：**Phase 2 完成**（骨架移植 + HTTP 服务壳 + 数据目录与设备池）。
+业务代码 95% 原样搬自上游。
 
 ## 快速开始
 
@@ -17,8 +18,25 @@ curl -H "Authorization: Bearer change-me" \
      "http://127.0.0.1:18921/api/v1/search?query=%E5%89%91%E6%9D%A5"
 ```
 
-首次启动会在后台注册 5 个上游设备身份，约 20 秒；期间 `/readyz` 返回 503。
-没有 `--token` 会直接拒绝启动 —— 一个不鉴权的监听端口等于把本机的设备身份借给任何人。
+首次启动会生成 `data/pool.key`，并在后台注册 5 个上游设备身份，约 20 秒；期间
+`/readyz` 返回 503。没有 `--token` 会直接拒绝启动 —— 一个不鉴权的监听端口等于把本机的
+设备身份借给任何人。
+
+### 数据目录
+
+```
+data/
+├─ config/config.json       # 缺失时写入默认值，不会覆盖已有文件
+├─ config/filter.json       # 同上
+├─ config/device_pool.json  # 设备池，AES-256-CBC + HMAC-SHA256 加密
+├─ pool.key                 # 池加密密钥（64 hex 字符）
+├─ src/                     # 媒体缓存
+└─ rust.log                 # 核心日志，1 MiB 轮转
+```
+
+**`pool.key` 丢了就等于丢了全部设备身份**：服务端会拒绝启动而不是重新生成密钥
+（新密钥打不开旧池，池会以空状态加载，然后重注册一批新设备）。请和 `device_pool.json`
+一起备份。也可以用 `FQ_POOL_KEY` 从外部注入，此时不需要 `pool.key` 文件。
 
 ### 参数
 
@@ -33,7 +51,7 @@ curl -H "Authorization: Bearer change-me" \
 | `--cors-origin` | 无 | 允许的跨域源，可重复或用逗号分隔 |
 
 同名环境变量为 `FQ_DATA_DIR`、`FQ_LISTEN`、`FQ_API_TOKENS`、`FQ_ANONYMOUS_READ`、
-`FQ_MAX_CONCURRENCY`、`FQ_TIMEOUT_SECS`、`FQ_CORS_ORIGINS`。
+`FQ_MAX_CONCURRENCY`、`FQ_TIMEOUT_SECS`、`FQ_CORS_ORIGINS`、`FQ_POOL_KEY`。
 
 ### 鉴权
 
@@ -56,9 +74,11 @@ crates/fqapi-core/     # 从 fqapp/rust 移植的核心（业务代码 95% 原�
   tests/ testdata/     # 与上游逐字节一致，是移植正确性的锚点
 crates/fqapi-server/   # HTTP 外壳（新增）
   src/config.rs        # 命令行 / 环境变量
+  src/poolkey.rs       # 池密钥的解析、生成与迁移判定
   src/http.rs          # axum 路由、dispatch 适配、流式文件、CORS
   src/auth.rs          # Bearer 鉴权 + 常量时间比较
   src/health.rs        # /healthz /readyz
+  src/main.rs          # 启动顺序、预热、信号与优雅退出
 docs/
   CODING.md              # 实现原则
   backend-analysis.md    # 上游后端逻辑分析
@@ -69,18 +89,18 @@ docs/
 ## 验证
 
 ```bash
-cargo check --all-targets
-cargo clippy --all-targets -- -D warnings
-cargo test            # 209 passed
+cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace   # 216 passed
 ```
 
 ## 部署前必须知道
 
-- **设备池当前是明文**（Phase 2 加 `<data-dir>/pool.key`）。里面是真实设备的
-  `secret_key`，完成前不要放到任何真实环境。
-- 媒体仍走上游的 `/src/*` 落盘路径（Phase 3 才做透传/代理两种模式）。
+- 媒体仍走上游的 `/src/*` 落盘路径（Phase 3 才做透传/代理两种模式）。代理模式之前，
+  服务端会缓存解密后的漫画图与视频。
 - 只有文件日志（`<data-dir>/rust.log`），stdout 结构化日志在 Phase 4。
 - 单实例设计。多实例会各自注册设备，上游看到 N 倍注册量，更容易触发风控。
+- 池里 5–20 个身份共享同一个出口 IP，比单设备更容易被风控识别。适合个人或小团队。
 
 ## 文档导航
 

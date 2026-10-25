@@ -114,13 +114,6 @@ pub async fn init(
     lan_share: bool,
     mock_upstream_origin: String,
 ) -> Result<String, String> {
-    // Upstream gated this on Android (no console there, and an app cannot read
-    // its own logcat). A server has a console, but the rotating file beside the
-    // runtime files is still the useful surface, so install unconditionally:
-    // the `log` macros stay no-ops until someone calls `init`, which is what
-    // keeps host tests quiet.
-    crate::core_log::install(&resolve_runtime_dir(&config_path, &runtime_dir));
-    log::info!("core init: port={port} lan_share={lan_share} config={config_path}");
     let mock = if mock_upstream_origin.trim().is_empty() {
         None
     } else {
@@ -143,10 +136,17 @@ pub async fn init(
     .await
 }
 
-/// Initialization with an optional upstream origin override. The public
-/// `init` passes `None` for the shipping app; host integration tests redirect
-/// every upstream call to a local mock server through this seam.
-pub(crate) async fn init_core(
+/// Initialization with an optional upstream origin override and an explicit
+/// listen mode.
+///
+/// `init` is the Flutter-shaped entry point (loopback or LAN, no origin
+/// override). A server publishes the dispatcher itself and must not also open
+/// the loopback adapter - its read routes answer any local client without a
+/// capability - so it calls this directly with
+/// [`ListenMode::Disabled`](crate::server::ListenMode::Disabled). The origin
+/// override is the offline test seam: it redirects every upstream call to a
+/// local mock server.
+pub async fn init_core(
     config_path: String,
     pool_path: String,
     filter_path: String,
@@ -162,6 +162,15 @@ pub(crate) async fn init_core(
             return Ok("running".to_string());
         }
     }
+
+    // Logging goes to a rotating file beside the runtime files. Upstream gated
+    // this on Android (no console there, and an app cannot read its own
+    // logcat); a server keeps the file and adds its own stdout surface.
+    // Installing it here rather than in `init` means every entry point gets it,
+    // while the `log` macros still stay no-ops until a core is initialized -
+    // which is what keeps host tests quiet.
+    crate::core_log::install(&resolve_runtime_dir(&config_path, &runtime_dir));
+    log::info!("core init: port={port} mode={mode:?} config={config_path}");
 
     let cfg = Arc::new(Config::load(&config_path)?);
     let root = resolve_runtime_dir(&config_path, &runtime_dir);
@@ -194,12 +203,15 @@ pub(crate) async fn init_core(
     // `port == 0` binds an ephemeral loopback port (host tests and any caller
     // that does not care which port is used); the Flutter transport passes the
     // port declared in `config.json` (the single source of truth) explicitly.
-    // The loopback adapter is always part of the core because resource URLs
-    // (`/src/...`) depend on it.
+    // A caller that serves the dispatcher itself passes `Disabled` instead and
+    // gets no listener at all.
     let _ = cfg.port;
-    let (actual_port, token, task) = match crate::server::serve(server.clone(), port, mode).await {
-        Ok(handle) => (handle.port, handle.token, Some(handle.task)),
-        Err(e) => return Err(e),
+    let (actual_port, token, task) = match mode {
+        crate::server::ListenMode::Disabled => (0u16, String::new(), None),
+        mode => match crate::server::serve(server.clone(), port, mode).await {
+            Ok(handle) => (handle.port, handle.token, Some(handle.task)),
+            Err(e) => return Err(e),
+        },
     };
 
     // The generation is read after the resource is fully built, so a stale
