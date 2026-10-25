@@ -24,6 +24,8 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::auth;
 use crate::health;
+use crate::history::History;
+use crate::tokens::TokenStore;
 
 /// Largest request body accepted. No route reads a body bigger than the
 /// 16 KiB account-capture limit (everything else takes its arguments from the
@@ -34,7 +36,11 @@ pub const MAX_BODY: usize = 1024 * 1024;
 #[derive(Clone)]
 pub struct AppState {
     pub server: Arc<Server>,
-    pub tokens: Arc<Vec<String>>,
+    pub tokens: Arc<TokenStore>,
+    /// Recent requests, for the admin page. Bounded and in memory.
+    pub history: Arc<History>,
+    /// Admin page sessions. Die with the process.
+    pub sessions: crate::admin::Sessions,
     pub anonymous_read: bool,
     /// Bounds in-flight upstream work. Queueing, not rejecting: a full pool is
     /// a throughput problem, not a client error.
@@ -47,7 +53,11 @@ impl AppState {
     pub fn from_config(server: Arc<Server>, cfg: &crate::config::Config) -> Self {
         AppState {
             server,
-            tokens: Arc::new(cfg.tokens.clone()),
+            // CLI/environment tokens seed the store; the admin page can add
+            // more, and those persist next to the device pool.
+            tokens: Arc::new(TokenStore::load(&cfg.data_dir, cfg.tokens.clone())),
+            history: Arc::new(History::new()),
+            sessions: crate::admin::sessions(),
             anonymous_read: cfg.anonymous_read,
             semaphore: Arc::new(tokio::sync::Semaphore::new(cfg.max_concurrency)),
             timeout: cfg.timeout,
@@ -70,10 +80,13 @@ pub fn router(state: AppState) -> Result<Router, String> {
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
         .merge(api)
+        // The admin page authenticates with its own session cookie, so it
+        // cannot sit behind the bearer-token layer above.
+        .merge(crate::admin::router())
         .layer(DefaultBodyLimit::max(MAX_BODY))
         // Outermost of the inner layers, so a rejected request (401, 413) is
         // still recorded - those are exactly the lines an operator looks for.
-        .layer(middleware::from_fn(log_access));
+        .layer(middleware::from_fn_with_state(state.clone(), log_access));
 
     if let Some(cors) = cors_layer(&state.cors_origins)? {
         app = app.layer(cors);
@@ -81,24 +94,38 @@ pub fn router(state: AppState) -> Result<Router, String> {
     Ok(app.with_state(state))
 }
 
-/// One line per request, on stdout.
+/// One line per request, on stdout, plus a row in the admin page's history.
 ///
 /// Deliberately not routed through `log`: the file sink rotates at 1 MiB with a
 /// single backup, so access lines would evict the diagnostics it exists to
 /// keep. The query string is never logged - media URLs carry the token in it.
-async fn log_access(request: Request, next: middleware::Next) -> Response {
+///
+/// `/admin` requests are logged but not recorded: the page polls its own state
+/// every few seconds, which would bury the API traffic an operator is looking
+/// for.
+async fn log_access(
+    State(state): State<AppState>,
+    request: Request,
+    next: middleware::Next,
+) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_string();
     let started = Instant::now();
 
     let response = next.run(request).await;
 
+    let millis = started.elapsed().as_millis() as u64;
     println!(
         "[I] {} access: {method} {path} {} {}ms",
         iso_utc_now(),
         response.status().as_u16(),
-        started.elapsed().as_millis()
+        millis
     );
+    if !path.starts_with("/admin") {
+        state
+            .history
+            .record(method.as_str(), &path, response.status().as_u16(), millis);
+    }
     response
 }
 

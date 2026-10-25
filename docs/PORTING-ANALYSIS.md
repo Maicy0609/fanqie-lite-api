@@ -7,6 +7,7 @@
 
 > **进度**：Phase 0（骨架移植）✓　Phase 1（HTTP 服务壳）✓　Phase 2（数据目录与设备池）✓
 > Phase 3（媒体）✓　Phase 4（日志与部署）✓　Phase 5（接口文档、参考客户端、CI）✓
+> Phase 6（客户端双模式）✓　Phase 7（管理页）✓
 > 实际偏离与验证记录见 `docs/UPSTREAM.md`。
 
 ---

@@ -494,6 +494,15 @@ impl DevicePool {
         self.state.lock().await.devices.len()
     }
 
+    /// A copy of the pooled devices, in pool order.
+    ///
+    /// Read-only: an admin view needs to show which identities exist and when
+    /// they were last used. Callers must redact `secret_key` before publishing
+    /// it - that field can decrypt upstream content.
+    pub async fn devices(&self) -> Vec<Device> {
+        self.state.lock().await.devices.clone()
+    }
+
     /// Writes the current pool state now.
     ///
     /// `save` is otherwise only reached from mutations, which leaves one gap a

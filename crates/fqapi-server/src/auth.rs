@@ -45,11 +45,8 @@ pub async fn require_token(
     }
 
     if let Some(presented) = presented_token(&request, &path) {
-        if state
-            .tokens
-            .iter()
-            .any(|known| constant_time_eq(known.as_bytes(), presented.as_bytes()))
-        {
+        // The store compares every entry in constant time.
+        if state.tokens.contains(&presented) {
             return next.run(request).await;
         }
     }
@@ -102,20 +99,6 @@ fn bearer(value: &str) -> Option<&str> {
     None
 }
 
-/// Byte-wise comparison with no early exit, so a caller cannot learn a token
-/// prefix from response timing. The length check is not secret-dependent: token
-/// length comes from configuration, not from the value.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,14 +149,5 @@ mod tests {
         assert_eq!(bearer("Bearer "), None);
         assert_eq!(bearer("abc"), None);
         assert_eq!(bearer("Basic abc"), None);
-    }
-
-    #[test]
-    fn constant_time_equality_matches_ordinary_equality() {
-        assert!(constant_time_eq(b"token", b"token"));
-        assert!(!constant_time_eq(b"token", b"tokeN"));
-        assert!(!constant_time_eq(b"token", b"token "));
-        assert!(!constant_time_eq(b"", b"x"));
-        assert!(constant_time_eq(b"", b""));
     }
 }

@@ -68,6 +68,41 @@ fn header<'a>(response: &'a reqwest::Response, name: &str) -> &'a str {
         .unwrap_or("")
 }
 
+/// `Set-Cookie` carries attributes after the first `;`; only the pair matters
+/// when replaying it.
+fn cookie_from(response: &reqwest::Response) -> String {
+    header(response, "set-cookie")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
+async fn login(h: &Harness, token: &str) -> String {
+    let response = client()
+        .post(h.url("/admin/login"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(format!("token={token}"))
+        .send()
+        .await
+        .expect("login");
+    assert_eq!(response.status(), 204, "login should succeed");
+    cookie_from(&response)
+}
+
+fn json_body_request(
+    client: &reqwest::Client,
+    url: String,
+    cookie: &str,
+    body: &str,
+) -> reqwest::RequestBuilder {
+    client
+        .post(url)
+        .header("cookie", cookie)
+        .header("content-type", "application/json")
+        .body(body.to_string())
+}
+
 /// Test directories must be unique per *call*, not per timestamp: eight tests
 /// start at once, and `SystemTime::now()` on Windows does not have the
 /// resolution to tell them apart. Colliding directories made one test's
@@ -428,4 +463,178 @@ async fn an_unsatisfiable_range_returns_416() {
         .expect("get");
     assert_eq!(response.status(), 416);
     assert_eq!(header(&response, "content-range"), "bytes */10");
+}
+
+#[tokio::test]
+async fn the_admin_page_is_served_and_its_api_needs_a_login() {
+    let h = start("secret", false, 5).await;
+
+    let page = client().get(h.url("/admin")).send().await.expect("get");
+    assert_eq!(page.status(), 200);
+    let html = page.text().await.expect("body");
+    assert!(
+        html.contains("fqapi-server") && html.contains("/admin/api/state"),
+        "the page must be the admin UI"
+    );
+
+    let anonymous = client()
+        .get(h.url("/admin/api/state"))
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(anonymous.status(), 401);
+
+    let wrong = client()
+        .post(h.url("/admin/login"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("token=guess")
+        .send()
+        .await
+        .expect("login");
+    assert_eq!(wrong.status(), 401, "a wrong token must not log in");
+}
+
+#[tokio::test]
+async fn the_admin_state_lists_devices_without_their_secret_keys() {
+    let h = start("secret", false, 5).await;
+    let cookie = login(&h, "secret").await;
+
+    let response = client()
+        .get(h.url("/admin/api/state"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .expect("state");
+    assert_eq!(response.status(), 200);
+    let state = json_body(response).await;
+
+    assert_eq!(state["ready"], true);
+    let devices = state["devices"].as_array().expect("devices");
+    assert_eq!(devices.len(), 5);
+    assert_eq!(devices[0]["has_key"], true);
+    assert!(
+        devices[0].get("secret_key").is_none(),
+        "secret_key must never reach the page: {devices:?}"
+    );
+    assert_eq!(state["tokens"][0]["bootstrap"], true);
+}
+
+#[tokio::test]
+async fn a_token_added_from_the_page_works_and_can_be_revoked() {
+    let h = start("secret", false, 5).await;
+    let cookie = login(&h, "secret").await;
+
+    let added = json_body_request(
+        &client(),
+        h.url("/admin/api/tokens"),
+        &cookie,
+        r#"{"token":"runtime-token-1"}"#,
+    )
+    .send()
+    .await
+    .expect("add");
+    assert_eq!(added.status(), 200);
+
+    // The new token authenticates like any other.
+    let api = client()
+        .get(h.url("/api/v1/search?query=x"))
+        .bearer_auth("runtime-token-1")
+        .send()
+        .await
+        .expect("search");
+    assert_eq!(api.status(), 200);
+
+    // Bootstrap tokens are the way back in, so they cannot be removed here.
+    let refused = json_body_request(
+        &client(),
+        h.url("/admin/api/tokens/remove"),
+        &cookie,
+        r#"{"token":"secret"}"#,
+    )
+    .send()
+    .await
+    .expect("remove bootstrap");
+    assert_eq!(refused.status(), 400);
+
+    let removed = json_body_request(
+        &client(),
+        h.url("/admin/api/tokens/remove"),
+        &cookie,
+        r#"{"token":"runtime-token-1"}"#,
+    )
+    .send()
+    .await
+    .expect("remove runtime");
+    assert_eq!(removed.status(), 200);
+
+    let rejected = client()
+        .get(h.url("/api/v1/search?query=x"))
+        .bearer_auth("runtime-token-1")
+        .send()
+        .await
+        .expect("search");
+    assert_eq!(rejected.status(), 401, "a revoked token must stop working");
+}
+
+#[tokio::test]
+async fn logout_invalidates_the_session() {
+    let h = start("secret", false, 5).await;
+    let cookie = login(&h, "secret").await;
+
+    let before = client()
+        .get(h.url("/admin/api/state"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .expect("state");
+    assert_eq!(before.status(), 200);
+
+    client()
+        .post(h.url("/admin/logout"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .expect("logout");
+
+    let after = client()
+        .get(h.url("/admin/api/state"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .expect("state");
+    assert_eq!(after.status(), 401, "the session must be gone");
+}
+
+#[tokio::test]
+async fn the_history_records_api_traffic_but_not_the_admin_page() {
+    let h = start("secret", false, 5).await;
+    let cookie = login(&h, "secret").await;
+
+    client()
+        .get(h.url("/api/v1/search?query=x"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("search");
+
+    let response = client()
+        .get(h.url("/admin/api/state"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .expect("state");
+    let state = json_body(response).await;
+    let history = state["history"].as_array().expect("history");
+
+    assert!(
+        history.iter().any(|row| row["path"] == "/api/v1/search"),
+        "the API call must be recorded: {history:?}"
+    );
+    assert!(
+        !history
+            .iter()
+            .any(|row| row["path"].as_str().unwrap_or("").starts_with("/admin")),
+        "the page's own polling must not fill the history: {history:?}"
+    );
+    assert_eq!(history[0]["status"], 200);
 }

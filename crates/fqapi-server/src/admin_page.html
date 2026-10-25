@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>fqapi-server</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --border: #dfe3e8;
+    --text: #1b1f24;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --ok: #0f766e;
+    --bad: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a;
+      --surface: #1c2024;
+      --border: #2b3137;
+      --text: #e6e8eb;
+      --muted: #9aa4b2;
+      --accent: #60a5fa;
+      --ok: #34d399;
+      --bad: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  h1 { font-size: 18px; margin: 0; }
+  h2 { font-size: 15px; margin: 0; }
+  .spacer { flex: 1; }
+  .pill {
+    font-size: 12px; padding: 2px 10px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .pill.ok { color: var(--ok); border-color: var(--ok); }
+  .pill.bad { color: var(--bad); border-color: var(--bad); }
+  button {
+    font: inherit; padding: 6px 14px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.link { border: none; background: none; color: var(--accent); padding: 2px 6px; }
+  input {
+    font: inherit; padding: 7px 10px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  }
+  section { margin-bottom: 28px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px;
+  }
+  .card .label { color: var(--muted); font-size: 12px; }
+  .card strong { font-size: 20px; font-variant-numeric: tabular-nums; }
+  .section-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th { color: var(--muted); font-weight: 500; background: var(--bg); }
+  tr:last-child td { border-bottom: none; }
+  td.num { font-variant-numeric: tabular-nums; }
+  td.mono, code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+  .muted { color: var(--muted); }
+  .error { color: var(--bad); }
+  .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+  #login { max-width: 360px; }
+  #login-form { display: flex; gap: 8px; margin-top: 12px; }
+  #login-form input { flex: 1; }
+  #token-form { display: flex; gap: 8px; margin-bottom: 10px; }
+  #token-form input { flex: 1; }
+  .empty { color: var(--muted); padding: 12px; }
+  @media (max-width: 560px) {
+    th:nth-child(3), td:nth-child(3) { display: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>fqapi-server</h1>
+    <span id="status" class="pill">未登录</span>
+    <span class="spacer"></span>
+    <button id="refresh" hidden>刷新</button>
+    <button id="logout" hidden>退出</button>
+  </header>
+
+  <section id="login" hidden>
+    <h2>登录</h2>
+    <form id="login-form">
+      <input id="token-input" type="password" placeholder="API 令牌" autocomplete="current-password" required>
+      <button class="primary" type="submit">登录</button>
+    </form>
+    <p class="hint">用启动服务端时的 <code>FQ_API_TOKENS</code> 值登录。会话保存在 HttpOnly Cookie 里，重启服务端即失效。</p>
+    <p id="login-error" class="error" hidden></p>
+  </section>
+
+  <div id="dashboard" hidden>
+    <section class="grid">
+      <div class="card"><span class="label">设备</span><strong id="device-count">-</strong></div>
+      <div class="card"><span class="label">就绪</span><strong id="ready">-</strong></div>
+      <div class="card"><span class="label">媒体缓存</span><strong id="cache">-</strong></div>
+      <div class="card"><span class="label">版本</span><strong id="version">-</strong></div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>设备池</h2>
+        <span class="spacer"></span>
+        <button id="refill">补齐到最少</button>
+      </div>
+      <table>
+        <thead><tr><th>device_id</th><th>install_id</th><th>最后使用</th><th class="num">次数</th><th>可用</th></tr></thead>
+        <tbody id="devices"></tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="section-head"><h2>令牌</h2></div>
+      <form id="token-form">
+        <input id="new-token" placeholder="新令牌（至少 8 个字符）" autocomplete="off">
+        <button type="submit">添加</button>
+      </form>
+      <table>
+        <thead><tr><th>令牌</th><th>来源</th><th></th></tr></thead>
+        <tbody id="tokens"></tbody>
+      </table>
+      <p class="hint">令牌以明文显示（本页已登录）。启动参数提供的令牌不能在这里删除——它是令牌全部被误删后的退路。</p>
+    </section>
+
+    <section>
+      <div class="section-head"><h2>最近请求</h2></div>
+      <table>
+        <thead><tr><th>时间</th><th>请求</th><th>状态</th><th class="num">耗时</th></tr></thead>
+        <tbody id="history"></tbody>
+      </table>
+      <p class="hint">只记录路径，不记录 query（媒体 URL 里带令牌）。最多保留 200 条。</p>
+    </section>
+  </div>
+</main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  let timer = null;
+
+  function text(tag, value, className) {
+    const node = document.createElement(tag);
+    node.textContent = value;
+    if (className) node.className = className;
+    return node;
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes) return "0 B";
+    const units = ["B", "KiB", "MiB", "GiB"];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+    return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+  }
+
+  function formatTime(seconds) {
+    if (!seconds) return "-";
+    const date = new Date(seconds * 1000);
+    return date.toLocaleTimeString();
+  }
+
+  function showLogin(message) {
+    $("login").hidden = false;
+    $("dashboard").hidden = true;
+    $("refresh").hidden = true;
+    $("logout").hidden = true;
+    $("status").textContent = "未登录";
+    $("status").className = "pill";
+    if (timer) { clearInterval(timer); timer = null; }
+    if (message) {
+      $("login-error").textContent = message;
+      $("login-error").hidden = false;
+    }
+  }
+
+  function showDashboard() {
+    $("login").hidden = true;
+    $("dashboard").hidden = false;
+    $("refresh").hidden = false;
+    $("logout").hidden = false;
+    if (!timer) timer = setInterval(load, 5000);
+  }
+
+  async function load() {
+    let response;
+    try {
+      response = await fetch("/admin/api/state", { credentials: "same-origin" });
+    } catch (error) {
+      $("status").textContent = "连接失败";
+      $("status").className = "pill bad";
+      return;
+    }
+    if (response.status === 401) { showLogin(""); return; }
+    if (!response.ok) {
+      $("status").textContent = `HTTP ${response.status}`;
+      $("status").className = "pill bad";
+      return;
+    }
+    render(await response.json());
+  }
+
+  function render(state) {
+    showDashboard();
+    const devices = state.devices || [];
+    $("status").textContent = state.ready ? "就绪" : "设备池为空";
+    $("status").className = state.ready ? "pill ok" : "pill bad";
+    $("device-count").textContent = `${devices.length} / ${state.min_pool_size}`;
+    $("ready").textContent = state.ready ? "是" : "否";
+    $("cache").textContent = `${(state.cache?.files ?? 0)} 个 · ${formatBytes(state.cache?.bytes ?? 0)}`;
+    $("version").textContent = state.version || "-";
+
+    const deviceRows = $("devices");
+    deviceRows.replaceChildren();
+    if (!devices.length) {
+      const row = document.createElement("tr");
+      const cell = text("td", "设备池是空的，服务端会按需注册。", "empty");
+      cell.colSpan = 5;
+      row.append(cell);
+      deviceRows.append(row);
+    }
+    for (const device of devices) {
+      const row = document.createElement("tr");
+      row.append(text("td", device.device_id, "mono"));
+      row.append(text("td", device.install_id, "mono"));
+      row.append(text("td", device.last_used || "-"));
+      row.append(text("td", String(device.use_count ?? 0), "num"));
+      row.append(text("td", device.has_key ? "是" : "无密钥", device.has_key ? "" : "error"));
+      deviceRows.append(row);
+    }
+
+    const tokenRows = $("tokens");
+    tokenRows.replaceChildren();
+    for (const token of state.tokens || []) {
+      const row = document.createElement("tr");
+      row.append(text("td", token.value, "mono"));
+      row.append(text("td", token.bootstrap ? "启动参数" : "页面添加", "muted"));
+      const actions = document.createElement("td");
+      if (!token.bootstrap) {
+        const remove = text("button", "删除", "link");
+        remove.type = "button";
+        remove.addEventListener("click", () => removeToken(token.value));
+        actions.append(remove);
+      } else {
+        actions.append(text("span", "—", "muted"));
+      }
+      row.append(actions);
+      tokenRows.append(row);
+    }
+
+    const historyRows = $("history");
+    historyRows.replaceChildren();
+    const history = state.history || [];
+    if (!history.length) {
+      const row = document.createElement("tr");
+      const cell = text("td", "还没有请求。", "empty");
+      cell.colSpan = 4;
+      row.append(cell);
+      historyRows.append(row);
+    }
+    for (const entry of history) {
+      const row = document.createElement("tr");
+      row.append(text("td", formatTime(entry.at)));
+      row.append(text("td", `${entry.method} ${entry.path}`, "mono"));
+      const status = text("td", String(entry.status), entry.status >= 400 ? "error" : "");
+      row.append(status);
+      row.append(text("td", `${entry.ms} ms`, "num"));
+      historyRows.append(row);
+    }
+  }
+
+  async function postJson(path, body) {
+    const response = await fetch(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (response.status === 401) { showLogin("会话已过期，请重新登录"); return null; }
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try { message = (await response.json()).error || message; } catch (_) {}
+      alert(message);
+      return null;
+    }
+    return response.json().catch(() => ({}));
+  }
+
+  async function removeToken(token) {
+    if (!confirm("删除这个令牌？用它配置的客户端会立即失效。")) return;
+    if (await postJson("/admin/api/tokens/remove", { token })) load();
+  }
+
+  $("login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    $("login-error").hidden = true;
+    const body = new URLSearchParams({ token: $("token-input").value });
+    const response = await fetch("/admin/login", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    if (!response.ok) {
+      let message = "令牌无效";
+      try { message = (await response.json()).error || message; } catch (_) {}
+      $("login-error").textContent = message;
+      $("login-error").hidden = false;
+      return;
+    }
+    $("token-input").value = "";
+    load();
+  });
+
+  $("logout").addEventListener("click", async () => {
+    await fetch("/admin/logout", { method: "POST", credentials: "same-origin" });
+    showLogin("");
+  });
+
+  $("refresh").addEventListener("click", load);
+
+  $("refill").addEventListener("click", async () => {
+    if (await postJson("/admin/api/devices/refill", {})) load();
+  });
+
+  $("token-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const token = $("new-token").value.trim();
+    if (!token) return;
+    if (await postJson("/admin/api/tokens", { token })) {
+      $("new-token").value = "";
+      load();
+    }
+  });
+
+  load();
+</script>
+</body>
+</html>

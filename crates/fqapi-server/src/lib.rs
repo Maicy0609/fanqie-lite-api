@@ -9,8 +9,11 @@
 //! Paths are unchanged from upstream (`/api/v1/*`), so an existing client only
 //! has to swap its transport.
 
+pub mod admin;
 pub mod auth;
 pub mod config;
 pub mod health;
+pub mod history;
 pub mod http;
 pub mod poolkey;
+pub mod tokens;

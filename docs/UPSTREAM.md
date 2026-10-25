@@ -78,6 +78,7 @@ Phase 0 的目标是"骨架，不改行为"。因此偏离只有"删掉不存在
 | 2 | `src/runtime/mod.rs` | ⑤ `init_core` 由 `pub(crate)` 改为 `pub`，并按 `ListenMode::Disabled` 跳过监听；⑥ 日志安装从 `init` 移进 `init_core`（否则直接调 `init_core` 的调用方拿不到任何日志） | 无（`init` 行为不变） |
 | 2 | `src/server.rs` | 新增 `ListenMode::Disabled` 变体；`serve()` 对该变体返回错误（正常路径不会到达） | 无 |
 | 2 | `src/device/mod.rs` | 新增 `pub async fn persist()`（3 行）：显式触发一次 `save`，用于密钥刚就绪时立刻把明文池迁移成加密 | 无（只是把 `save` 暴露出来） |
+| 6 | `src/device/mod.rs` | 新增 `pub async fn devices()`（5 行）：返回池内设备的副本，供管理页展示 | 无（只读拷贝，`secret_key` 由调用方脱敏） |
 | 0 | `src/core_log.rs` | 删 `android_logger` 分支：`LOGCAT_TAG` 常量、`CoreLogger.android` 字段、`new()` 中的初始化、`log()` 中的镜像、`flush()` 中的转发；文档注释同步 | **有**：不再镜像到 logcat（服务端没有 logcat） |
 | 4 | `src/core_log.rs` | `log()` 写完文件后把同一行 `println!` 到 stdout（3 行） | **有**：容器只采集 stdout，否则 `docker logs` 里看不到任何核心诊断 |
 | 0 | `Cargo.toml` | 删 `flutter_rust_bridge`、`android_logger`、`[build-dependencies] cc`、`[target.'cfg(windows)'.dependencies] reqwest/blocking`；`crate-type` 改为 `["rlib"]` | 无 |
@@ -304,6 +305,34 @@ fqapi-server listening on http://0.0.0.0:18921
 
 教训：**本地 lint 干净不等于 CI 干净**——工具链版本会引入新 lint。这类问题只有让 CI
 真跑一遍才会暴露。
+
+### 4.7 Phase 7 管理页（真实二进制）
+
+计划里原本写的是"管理后台：先用 /healthz + 日志，不做"。实际做下来，设备池、令牌、
+请求历史本来都是**服务端的状态**，做成页面比给每个客户端加设置页更省事，也更符合
+"多平台前端"的目标。
+
+2026-10-25，`--token admin-token --listen 127.0.0.1:19028`：
+
+| 请求 | 结果 |
+|---|---|
+| `GET /admin` | `200`，12.8 KB HTML |
+| `GET /admin/api/state`（无会话） | `401 {"error":"需要先登录"}` |
+| `POST /admin/login`（正确令牌） | `204` + `Set-Cookie` |
+| `GET /admin/api/state`（带会话） | `200`，5 个设备、缓存 1 文件 2048 字节、令牌列表 |
+| 页面添加令牌后用它调 API | `200` |
+| 删除启动参数提供的令牌 | `400`，"启动参数提供的令牌不能在这里删除" |
+| 删除运行时令牌 | `200`，该令牌立刻变成 `401` |
+| `tokens.json` | `{"tokens":[]}`（删除已落盘） |
+
+设计上的四个决定：
+
+1. **会话是 HttpOnly Cookie，且不含令牌本身**——泄露的 cookie 不能当 API 凭证复用；
+   会话存在内存里，进程重启即失效。
+2. **启动参数提供的令牌不可删**——它是令牌被误删光之后的退路。
+3. **`secret_key` 从不出现在页面上**，只给 `has_key` 布尔值。它是能解密上游内容的密钥。
+4. **`/admin/*` 的请求写日志但不进历史**——页面每 5 秒轮询一次状态，否则会把操作员
+   真正想看的 API 流量冲掉。
 
 ---
 

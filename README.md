@@ -116,6 +116,21 @@ scripts/smoke.sh fqapi-lite-api:local
 
 镜像里带 `LICENSE` 与 `NOTICE`：GPL-3.0 第 6 条，分发镜像就是分发二进制。
 
+## 管理页面
+
+浏览器打开 `http://<host>:18921/admin`，用任意一个 API 令牌登录。
+
+能看到：
+
+- **设备池** —— device_id / install_id / 最后使用 / 使用次数 / 是否有密钥；空了可以一键补齐
+- **令牌** —— 列表、添加、删除；页面加的令牌存进 `<data-dir>/tokens.json`，重启仍有效
+- **最近请求** —— 方法 / 路径 / 状态 / 耗时，最多 200 条
+- 缓存占用、版本、就绪状态
+
+会话是 HttpOnly Cookie，12 小时过期，进程重启即失效。两点刻意的设计：`secret_key`
+从不出现在页面上（只给"是否有密钥"），启动参数提供的令牌不能在页面删除——它是令牌
+被误删光之后的退路。
+
 ## 日志
 
 两个出口，同一行格式：
@@ -143,8 +158,12 @@ crates/fqapi-core/     # 从 fqapp/rust 移植的核心（业务代码 95% 原�
 crates/fqapi-server/   # HTTP 外壳（新增）
   src/config.rs        # 命令行 / 环境变量
   src/poolkey.rs       # 池密钥的解析、生成与迁移判定
-  src/http.rs          # axum 路由、dispatch 适配、流式文件、CORS
-  src/auth.rs          # Bearer 鉴权 + 常量时间比较
+  src/http.rs          # axum 路由、dispatch 适配、流式文件、CORS、访问日志
+  src/auth.rs          # Bearer 鉴权；媒体路径额外接受 ?token=
+  src/tokens.rs        # 令牌存储：启动参数 + 页面添加，持久化
+  src/history.rs       # 最近请求的内存环形缓冲
+  src/admin.rs         # /admin 路由与 JSON API
+  src/admin_page.html  # 管理页面（单文件，无构建步骤）
   src/health.rs        # /healthz /readyz
   src/main.rs          # 启动顺序、预热、信号与优雅退出
 clients/python/        # 参考客户端（纯标准库）+ 端到端脚本
