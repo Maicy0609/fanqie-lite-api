@@ -1,0 +1,116 @@
+name: ci
+
+# Five gates, each one a thing that has actually broken during development:
+#
+#   static    formatting and lints. The ported core is rustfmt-clean, so a diff
+#             here means someone edited it - which is worth a look on its own.
+#   test      the full Rust suite, including the ported contract tests.
+#   contract  docs/API.md against the source, plus the reference client's tests.
+#             The document is hand-written; this is what stops it drifting.
+#   e2e       real binary + mock upstream + reference client, plus a probe of
+#             every documented route. Offline on purpose: a job that registers
+#             real device identities on every push would be abuse.
+#   image     the container builds and enforces auth. The upstream origin is
+#             pointed at a black hole so the smoke run stays offline too.
+
+on:
+  push:
+    branches: [master, main]
+    # Prose and licence edits do not need five jobs. Note the trade-off: a
+    # docs/API.md-only change is not verified until the next code push, so use
+    # the manual trigger below after editing the API table.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - "NOTICE"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".dockerignore"
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - "NOTICE"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".dockerignore"
+  # Always available for a docs-only change: Actions -> ci -> Run workflow.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  static:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked
+
+  contract:
+    name: api doc + client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: docs/API.md matches the source
+        run: python scripts/check_api_doc.py
+      - name: reference client tests
+        working-directory: clients/python
+        run: python -m unittest -v
+
+  e2e:
+    name: end-to-end
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: cargo build --locked -p fqapi-server
+      - name: client against a real server
+        run: python clients/python/e2e.py
+
+  image:
+    name: container
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: docker build -t fqapi-lite-api:ci .
+      - name: smoke
+        env:
+          # Unroutable on purpose: the run must not register real devices.
+          FQ_UPSTREAM_ORIGIN: http://127.0.0.1:1
+        run: bash scripts/smoke.sh fqapi-lite-api:ci

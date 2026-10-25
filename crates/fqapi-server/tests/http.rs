@@ -120,11 +120,9 @@ async fn build_core(dir: &Path, upstream_origin: &str) -> Arc<Server> {
         .expect("pool");
     let upstream = UpstreamClient::with_mock_origin(pool.clone(), Manager::new(), upstream_origin)
         .expect("upstream");
-    let filters = FilterManager::load_with_base(
-        dir.join("filter.json").to_str().expect("utf-8 path"),
-        "",
-    )
-    .expect("filters");
+    let filters =
+        FilterManager::load_with_base(dir.join("filter.json").to_str().expect("utf-8 path"), "")
+            .expect("filters");
     let ctx = Arc::new(Ctx {
         up: Arc::new(upstream),
         pool,
@@ -342,7 +340,10 @@ async fn cached_media_is_served_with_a_bearer_token() {
         "a media URL may carry the token in its query string"
     );
     assert_eq!(header(&response, "cache-control"), "private, max-age=3600");
-    assert_eq!(response.bytes().await.expect("body").as_ref(), b"0123456789");
+    assert_eq!(
+        response.bytes().await.expect("body").as_ref(),
+        b"0123456789"
+    );
 }
 
 #[tokio::test]

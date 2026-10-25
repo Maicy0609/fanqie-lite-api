@@ -45,10 +45,14 @@ status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 echo "==> starting $IMAGE on 127.0.0.1:$PORT"
 "$DOCKER" volume create "$VOLUME" >/dev/null
+# `-e FQ_UPSTREAM_ORIGIN` (no value) forwards the caller's variable, so CI can
+# point the container at an unroutable origin and keep the run offline. Unset
+# locally means the container talks to the real upstream.
 "$DOCKER" run -d --name "$NAME" \
   -p "127.0.0.1:$PORT:18921" \
   -v "$VOLUME:/data" \
   -e "FQ_API_TOKENS=$TOKEN" \
+  -e FQ_UPSTREAM_ORIGIN \
   "$IMAGE" --data-dir /data --listen 0.0.0.0:18921 >/dev/null
 
 for _ in $(seq 1 30); do

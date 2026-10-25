@@ -34,7 +34,11 @@ use fqapi_core::endpoints::Params;
 
 use crate::http::{is_media_path, json_error, AppState};
 
-pub async fn require_token(State(state): State<AppState>, request: Request, next: Next) -> Response {
+pub async fn require_token(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
     let path = request.uri().path().to_string();
     if !needs_token(&path, state.anonymous_read) {
         return next.run(request).await;

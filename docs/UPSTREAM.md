@@ -253,9 +253,53 @@ fqapi-server listening on http://0.0.0.0:18921
 2. `scripts/smoke.sh` 里 `export MSYS_NO_PATHCONV=1`：Git Bash 会把 `-v ...:/data`
    里的 `/data` 改写成 Windows 路径，容器内就找不到挂载点。
 
+### 4.6 Phase 5 接口文档与契约检查
+
+`docs/API.md` 是手写的，所以配了 `scripts/check_api_doc.py` 做双向比对。基准全部来自
+源码，不来自文档自身：
+
+| 文档声称 | 基准 |
+|---|---|
+| 路径段 | `endpoints/router.rs` 的 `"x" =>` 分支与 `== "x"` 守卫 |
+| 已实现的端点 | 各模块的 `add_route("...")` |
+| query 参数 | 各模块的 `params.get_str("...")` |
+| body 参数 | 账号采集模块的 `CaptureRequest` 字段 |
+| 必填参数 | 各模块 `BadRequest("...")` 里的标识符 |
+
+首次运行报了 31 条，其中**三条是文档的真错误**，其余是检查器自身的建模问题（已修）：
+
+1. `/api/v1/search/suggest` —— 路由存在，但**没有任何模块注册 `search_predict`**，
+   实际返回 `404 unsupported api type`。
+2. `/api/v1/articles/{id}` —— 同上，`toutiao_article` 从未注册。
+3. `/api/v1/books/{id}/chapters/{id}/summary` —— 路径写错了。真实形态是
+   `/api/v1/books/{id}/chapters/summary`，章节 id 走 query 的 `item_ids`。
+   这条**只有靠 `--base-url` 的真实探测才能发现**：静态检查看到 `chapters`、`summary`
+   两个段都存在，就放行了。
+
+前两条在**上游 fqapp 里就是死的**（`grep search_predict` 只命中 `router.rs`），不是移植
+漏掉的。检查器把这两个洞钉成 `KNOWN_UNIMPLEMENTED`：多一个死路由会失败，修好其中一个
+也会失败（要求同步更新清单和文档）。
+
+**检查器有牙齿的证明**：往文档里插一条
+`| GET | /api/v1/search/fake | query | paginate | ... |`，检查器报三条并退出 1：
+
+```
+- documented segment `fake` is not in router.rs
+- GET /api/v1/search/fake: parameter `paginate` is read by no module
+- GET /api/v1/search/fake: `paginate` is not read by search.rs (section `搜索与分类`)
+```
+
+客户端与端到端：
+
+| 检查 | 结果 |
+|---|---|
+| `clients/python` 单测（假服务器） | 8 passed |
+| `clients/python/e2e.py`（真二进制 + 模拟上游） | 7 项全过 |
+| e2e 内置的文档探测 | 58 条文档路径全部非 404 |
+
 ---
 
-## 5. 待办偏离（Phase 5 及以后）
+## 5. 待办偏离（Phase 6 及以后）
 
 按 `docs/PORTING-ANALYSIS.md` 的计划，以下改动尚未实施。每实施一项，**必须**在 §3 追加记录。
 

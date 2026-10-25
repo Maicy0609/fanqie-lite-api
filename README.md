@@ -147,20 +147,58 @@ crates/fqapi-server/   # HTTP 外壳（新增）
   src/auth.rs          # Bearer 鉴权 + 常量时间比较
   src/health.rs        # /healthz /readyz
   src/main.rs          # 启动顺序、预热、信号与优雅退出
+clients/python/        # 参考客户端（纯标准库）+ 端到端脚本
+scripts/               # smoke.sh（容器冒烟）、check_api_doc.py（文档契约）
+deploy/                # docker-compose 示例
+.github/workflows/     # CI：fmt+clippy / test / 文档契约 / e2e / 镜像
 docs/
   CODING.md              # 实现原则
+  API.md                 # 46 个端点、57 条路径的接口手册
   backend-analysis.md    # 上游后端逻辑分析
   PORTING-ANALYSIS.md    # 移植方案、接口设计、阶段计划
   UPSTREAM.md            # 上游 commit + 偏离清单 + 验证记录（GPL-3.0 §5(a) 声明）
 ```
 
+## 客户端
+
+`clients/python/` 是一个纯标准库的参考实现，既是"客户端怎么对接"的活文档，也是端到端
+测试的驱动器：
+
+```bash
+export FQ_API_TOKEN=your-token
+python clients/python/fqapi_client.py search 剑来
+python clients/python/fqapi_client.py directory <book_id>
+```
+
+```python
+from fqapi_client import FqapiClient
+
+api = FqapiClient("http://127.0.0.1:18921", "your-token")
+api.search("剑来")["data"]          # 上游 JSON 原样返回
+api.media_url("/src/img_abc.jpg")   # 自动带上 ?token=
+```
+
+移植自己的前端时，`backend_transport.dart` 里换成 HTTP 传输 + base URL 即可，业务代码
+不用动——路径和响应形状都保持上游原样。
+
 ## 验证
 
 ```bash
-cargo check --workspace --all-targets
+cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace   # 225 passed
+cargo test --workspace                      # 225 passed
+python scripts/check_api_doc.py             # docs/API.md 与源码一致
+python clients/python/e2e.py                # 真二进制 + 模拟上游 + 客户端
 ```
+
+`check_api_doc.py` 拿 `router.rs` 的路径字面量、各模块的 `get_str` 与 `BadRequest`
+消息当基准，双向比对文档——既能抓编造的路由/参数，也能抓漏写的。加
+`--base-url http://127.0.0.1:18921 --token <token>` 还会逐条探测文档里的路径，
+确认它们在真实服务上不是 404。
+
+CI（`.github/workflows/ci.yml`）跑五道门槛：fmt+clippy、cargo test、文档契约+客户端
+单测、端到端、容器构建+冒烟。只改文档不会触发——需要时从 Actions 页面手动
+`Run workflow`。
 
 ## 部署前必须知道
 
@@ -173,6 +211,7 @@ cargo test --workspace   # 225 passed
 ## 文档导航
 
 - 上游怎么工作的 → `docs/backend-analysis.md`
+- **接口怎么调** → `docs/API.md`
 - 怎么移植、接口怎么设计 → `docs/PORTING-ANALYSIS.md`
 - 改了上游哪些地方、怎么验证的 → `docs/UPSTREAM.md`
 

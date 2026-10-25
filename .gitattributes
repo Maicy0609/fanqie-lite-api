@@ -15,6 +15,7 @@ crates/fqapi-core/testdata/** text eol=lf
 # Docs and scripts.
 *.md    text eol=lf
 *.sh    text eol=lf
+*.py    text eol=lf
 
 # Container files. Docker reads them on every platform, and a CRLF `RUN` line
 # is a support ticket waiting to happen.

@@ -246,8 +246,7 @@ fn cors_layer(origins: &[String]) -> Result<Option<CorsLayer>, String> {
             ));
         }
         allowed.push(
-            HeaderValue::from_str(origin)
-                .map_err(|_| format!("invalid CORS origin: {origin}"))?,
+            HeaderValue::from_str(origin).map_err(|_| format!("invalid CORS origin: {origin}"))?,
         );
     }
     Ok(Some(

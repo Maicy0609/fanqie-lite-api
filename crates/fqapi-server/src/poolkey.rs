@@ -205,10 +205,7 @@ mod tests {
         std::fs::write(&pool, b"FQPOOL1\x00\x00\x00\x00").expect("seed");
 
         let err = load_or_create(&dir, &pool, None).expect_err("must refuse");
-        assert!(
-            err.contains("encrypted"),
-            "the message must say why: {err}"
-        );
+        assert!(err.contains("encrypted"), "the message must say why: {err}");
         assert!(
             !dir.join(KEY_FILE_NAME).exists(),
             "no key file may be written when refusing"
@@ -238,7 +235,10 @@ mod tests {
         assert!(needs_migration(&pool));
 
         std::fs::write(&pool, b"FQPOOL1\x00\x00").expect("encrypted");
-        assert!(!needs_migration(&pool), "an encrypted pool is already migrated");
+        assert!(
+            !needs_migration(&pool),
+            "an encrypted pool is already migrated"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -72,8 +72,7 @@ pub fn parse_from(
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let mut value = |name: &str| -> Result<String, String> {
-            args.next()
-                .ok_or_else(|| format!("{name} needs a value"))
+            args.next().ok_or_else(|| format!("{name} needs a value"))
         };
         match arg.as_str() {
             "-h" | "--help" => return Ok(ParseOutcome::Help),
@@ -181,9 +180,7 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         match parse_from(args.iter().map(|s| s.to_string()), |key| {
-            env.iter()
-                .find(|(k, _)| k == key)
-                .map(|(_, v)| v.clone())
+            env.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
         })? {
             ParseOutcome::Run(cfg) => Ok(*cfg),
             ParseOutcome::Help => Err("help".to_string()),
