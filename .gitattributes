@@ -16,6 +16,13 @@ crates/fqapi-core/testdata/** text eol=lf
 *.md    text eol=lf
 *.sh    text eol=lf
 
+# Container files. Docker reads them on every platform, and a CRLF `RUN` line
+# is a support ticket waiting to happen.
+Dockerfile      text eol=lf
+.dockerignore   text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+
 # Licence text has no extension, so it needs an explicit rule.
 LICENSE text eol=lf
 NOTICE  text eol=lf

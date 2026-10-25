@@ -8,7 +8,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Request, State};
@@ -70,12 +70,40 @@ pub fn router(state: AppState) -> Result<Router, String> {
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
         .merge(api)
-        .layer(DefaultBodyLimit::max(MAX_BODY));
+        .layer(DefaultBodyLimit::max(MAX_BODY))
+        // Outermost of the inner layers, so a rejected request (401, 413) is
+        // still recorded - those are exactly the lines an operator looks for.
+        .layer(middleware::from_fn(log_access));
 
     if let Some(cors) = cors_layer(&state.cors_origins)? {
         app = app.layer(cors);
     }
     Ok(app.with_state(state))
+}
+
+/// One line per request, on stdout.
+///
+/// Deliberately not routed through `log`: the file sink rotates at 1 MiB with a
+/// single backup, so access lines would evict the diagnostics it exists to
+/// keep. The query string is never logged - media URLs carry the token in it.
+async fn log_access(request: Request, next: middleware::Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let started = Instant::now();
+
+    let response = next.run(request).await;
+
+    println!(
+        "[I] {} access: {method} {path} {} {}ms",
+        iso_utc_now(),
+        response.status().as_u16(),
+        started.elapsed().as_millis()
+    );
+    response
+}
+
+fn iso_utc_now() -> String {
+    fqapi_core::timeutil::format_unix(fqapi_core::timeutil::now_secs()).replacen(' ', "T", 1)
 }
 
 /// The cached-media namespace, served by `fqapi_core::static_files`.

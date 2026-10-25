@@ -79,6 +79,7 @@ Phase 0 的目标是"骨架，不改行为"。因此偏离只有"删掉不存在
 | 2 | `src/server.rs` | 新增 `ListenMode::Disabled` 变体；`serve()` 对该变体返回错误（正常路径不会到达） | 无 |
 | 2 | `src/device/mod.rs` | 新增 `pub async fn persist()`（3 行）：显式触发一次 `save`，用于密钥刚就绪时立刻把明文池迁移成加密 | 无（只是把 `save` 暴露出来） |
 | 0 | `src/core_log.rs` | 删 `android_logger` 分支：`LOGCAT_TAG` 常量、`CoreLogger.android` 字段、`new()` 中的初始化、`log()` 中的镜像、`flush()` 中的转发；文档注释同步 | **有**：不再镜像到 logcat（服务端没有 logcat） |
+| 4 | `src/core_log.rs` | `log()` 写完文件后把同一行 `println!` 到 stdout（3 行） | **有**：容器只采集 stdout，否则 `docker logs` 里看不到任何核心诊断 |
 | 0 | `Cargo.toml` | 删 `flutter_rust_bridge`、`android_logger`、`[build-dependencies] cc`、`[target.'cfg(windows)'.dependencies] reqwest/blocking`；`crate-type` 改为 `["rlib"]` | 无 |
 | 0 | 根 `Cargo.toml` | 新增 workspace；`[profile.*]` 从成员清单移到根（Cargo 只认根 profile） | 无 |
 
@@ -111,6 +112,7 @@ Phase 0 时 47 个源文件逐字节一致；Phase 2 之后 `server.rs` 与 `dev
 | 真实上游端到端 | 见 §4.2 | 搜索、目录均返回真实数据 |
 | 加密与监听 | 见 §4.3 | 明文池启动即加密；只有一个监听端口 |
 | 媒体鉴权与 Range | 见 §4.4 | 401 / 200 / 206 / 416 全部符合预期 |
+| 镜像构建与运行 | 见 §4.5 | 139 MB，非 root，HEALTHCHECK healthy，日志在 stdout |
 
 一致性检查必须比对**上游仓库内容**，不能比对上游工作树：Windows 上
 `core.autocrlf=true` 会把上游 checkout 成 CRLF，直接 `diff -r` 会得到满屏假差异。
@@ -207,9 +209,53 @@ fqapi_server unittests (lib)         25
 上游已经实现并且有测试（`video.rs` 的 `prune_src_cache_with_budget` 单测、`static_files`
 的 Range 测试）。这一阶段只补了两件 server 侧的事：媒体路径的凭证策略，以及响应头加固。
 
+### 4.5 Phase 4 镜像与日志
+
+2026-10-25，Docker 29.9.2（linux/amd64），`docker build -t fqapi-lite-api:local .`：
+
+| 检查 | 结果 |
+|---|---|
+| 构建耗时 | 2 分 27 秒（release 编译 1 分 02 秒，LTO + codegen-units=1） |
+| 镜像大小 | 139 MB |
+| 运行身份 | `uid=10001(fqapi)`，非 root |
+| 合规文件 | `/usr/share/doc/fqapi-server/{LICENSE,NOTICE}` 均在 |
+| `docker ps` | `Up (healthy)` —— HEALTHCHECK 打 `/healthz` 通过 |
+| `scripts/smoke.sh` | 6 项全过 |
+
+`scripts/smoke.sh` 的实际输出（容器内真实完成设备注册与上游调用）：
+
+```
+ok   /healthz 200 without a token
+ok   /api/v1/search 401 without a token
+ok   /api/v1/search 200 with a token
+ok   /src/* 401 without a token
+ok   ?token= does not open API routes
+info /readyz 200 (200 = the device pool registered upstream)
+```
+
+`docker logs` 的实际输出，确认两条出口都通、且**没有记录 query string**：
+
+```
+[I] 2026-10-25T03:21:43 core: fqapi_core::runtime: core init: port=0 mode=Disabled config=/data/config/config.json
+fqapi-server listening on http://0.0.0.0:18921
+[I] 2026-10-25T03:21:48 access: GET /healthz 200 0ms
+[I] 2026-10-25T03:21:57 access: GET /api/v1/search 401 0ms
+[I] 2026-10-25T03:21:59 access: GET /api/v1/search 200 2211ms
+```
+
+最后一行 2211 ms 是首次调用触发的设备注册；同一进程内后续请求回到毫秒级。
+
+**构建时踩到的两个环境问题**（不是项目问题，记录备查）：
+
+1. `docker` 与 `docker-credential-desktop` 都不在默认 PATH（本机装在
+   `F:\Tools\Docker\resources\bin`），后者缺失会让 `docker build` 在解析
+   `# syntax=docker/dockerfile:1` 时报 "error getting credentials"。
+2. `scripts/smoke.sh` 里 `export MSYS_NO_PATHCONV=1`：Git Bash 会把 `-v ...:/data`
+   里的 `/data` 改写成 Windows 路径，容器内就找不到挂载点。
+
 ---
 
-## 5. 待办偏离（Phase 4 及以后）
+## 5. 待办偏离（Phase 5 及以后）
 
 按 `docs/PORTING-ANALYSIS.md` 的计划，以下改动尚未实施。每实施一项，**必须**在 §3 追加记录。
 
@@ -219,7 +265,7 @@ fqapi_server unittests (lib)         25
 | 2 | 公开监听层（鉴权 / CORS / 限流 / 探针） | Phase 1 | **已完成**，见 `crates/fqapi-server`（未改 `server.rs` 的既有行为） |
 | 3 | 设备池 key 来源改为 `<data-dir>/pool.key` | Phase 2 | **已完成**，见 §4.3 |
 | 4 | 媒体代理模式（`--media-proxy`）与签名 URL + TTL | Phase 3 | **不做（重新定义）**，理由见下 |
-| 5 | `core_log` 增加 stdout 输出 | Phase 4 | 待办 |
+| 5 | `core_log` 增加 stdout 输出 | Phase 4 | **已完成**，见 §3.3 |
 | 6 | `error.rs` 增加可选 `code` 字段 | 延后 | 暂无消费方，避免加入未被使用的抽象 |
 | 7 | `video.rs::handle_pseries` 的 `eprintln!` 改为 `log::warn!` | — | **不做**：上游那样写是因为 Android 没有控制台；服务端 stderr 本来就会被采集 |
 | 8 | 让初始化支持不启动 loopback 适配器 | Phase 2 | **已完成**（`ListenMode::Disabled`），见 §4.3 |

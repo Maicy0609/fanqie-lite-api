@@ -1,0 +1,19 @@
+# Everything the image does not need. `target/` alone is gigabytes and is
+# rebuilt inside the build stage; sending it as build context makes every build
+# slower for no gain.
+target/
+
+# Runtime state: device pool, pool key, media cache, logs.
+data/
+
+# VCS and local agent data.
+.git/
+.workbuddy-ai/
+
+# Editor / OS noise.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+*.log

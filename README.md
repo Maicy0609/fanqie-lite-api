@@ -85,6 +85,50 @@ curl -H "Range: bytes=0-1023" \
 `?token=` 只在 `/src/*` 生效，打 API 会被拒绝。响应带 `Referrer-Policy: no-referrer`
 和 `Cache-Control: private`，避免这条 URL 从 referrer 或共享缓存里漏出去。
 
+## 部署（Docker）
+
+```bash
+export FQ_API_TOKENS=$(openssl rand -hex 32)
+docker compose -f deploy/docker-compose.yml up -d --build
+curl -fsS http://127.0.0.1:18921/healthz
+```
+
+不用 compose 时：
+
+```bash
+docker build -t fqapi-lite-api:local .
+docker run -d --name fqapi -p 127.0.0.1:18921:18921 \
+  -v fqapi-data:/data -e FQ_API_TOKENS="$FQ_API_TOKENS" \
+  fqapi-lite-api:local
+```
+
+镜像以非 root（uid 10001）运行，`/data` 是卷。**卷要备份**：里面有 `pool.key`，
+丢了就等于丢了全部设备身份。
+
+跑一遍容器冒烟（不需要网络）：
+
+```bash
+scripts/smoke.sh fqapi-lite-api:local
+```
+
+它会验证 `/healthz` 通、匿名请求一律 401、有效令牌能过、`?token=` 打不开 API 路由；
+`/readyz` 只报告不判定——就绪要等上游注册，取决于网络。
+
+镜像里带 `LICENSE` 与 `NOTICE`：GPL-3.0 第 6 条，分发镜像就是分发二进制。
+
+## 日志
+
+两个出口，同一行格式：
+
+| 出口 | 内容 |
+|---|---|
+| stdout | 核心日志 + 访问日志，容器直接 `docker logs` 看 |
+| `<data-dir>/rust.log` | 只有核心日志，1 MiB 轮转、1 份备份 |
+
+访问日志一行一请求：`[I] <iso> access: GET /api/v1/search 200 42ms`。
+它**故意不写文件**——文件只有 1 MiB，访问日志会把要留的诊断挤掉。
+也**不记录 query string**，因为媒体 URL 里带令牌。
+
 ## 目录
 
 ```

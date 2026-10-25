@@ -1,0 +1,35 @@
+# Minimal deployment example.
+#
+#   FQ_API_TOKENS=$(openssl rand -hex 32) docker compose -f deploy/docker-compose.yml up -d
+#
+# The token is the only required setting: the server refuses to start without
+# one, because an unauthenticated listener lets anyone spend this host's device
+# identities.
+
+services:
+  fqapi:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: fqapi-lite-api:local
+    restart: unless-stopped
+    ports:
+      # Loopback only. Put a reverse proxy in front if it must be reachable
+      # from elsewhere, and keep the token out of proxy access logs.
+      - "127.0.0.1:18921:18921"
+    environment:
+      FQ_API_TOKENS: ${FQ_API_TOKENS:?set FQ_API_TOKENS, e.g. export FQ_API_TOKENS=$(openssl rand -hex 32)}
+      FQ_MAX_CONCURRENCY: "60"
+      # FQ_POOL_KEY: optional; without it the key is generated into the volume.
+      # Back the volume up: losing pool.key means losing every device identity.
+    volumes:
+      - fqapi-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18921/healthz"]
+      interval: 30s
+      timeout: 3s
+      start_period: 40s
+      retries: 3
+
+volumes:
+  fqapi-data:

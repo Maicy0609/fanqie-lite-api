@@ -1,7 +1,7 @@
-// Rust 核心日志：落盘到运行时目录的 `rust.log`。
+// Rust 核心日志：落盘到运行时目录的 `rust.log`，同时镜像到 stdout。
 //
-// 上游在 Android 上同时镜像一份到 logcat（应用读不到自己的 logcat，落盘副本是唯一
-// 观测面）。服务端没有 logcat，因此只保留落盘这一条出口；stdout 输出在服务层接入。
+// 上游在 Android 上镜像到 logcat（应用读不到自己的 logcat，落盘副本是唯一观测面）。
+// 服务端没有 logcat，但容器只采集 stdout，所以镜像目标是 stdout。两条出口同一格式。
 //
 // 行格式与 Dart 侧 `app.log` 同形（`[级别] ISO标签: 消息`），Dart 因此可以复用同一个
 // 解析器；标签固定为 `core`（冒号无关），模块路径放进消息里，避免被解析截断。
@@ -144,9 +144,14 @@ impl Log for CoreLogger {
         if !self.enabled(record.metadata()) {
             return;
         }
+        let line = Self::format_line(record);
         if let Ok(mut file) = self.file.lock() {
-            file.write_line(&Self::format_line(record));
+            file.write_line(&line);
         }
+        // Containers read stdout, not a file inside the data volume, so the
+        // same line also goes there. One line, one format, two surfaces - the
+        // Dart log page and `docker logs` share the parser.
+        println!("{line}");
     }
 
     fn flush(&self) {}
