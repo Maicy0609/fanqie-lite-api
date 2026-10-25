@@ -18,8 +18,10 @@ const JSON_CT: &str = "application/json; charset=utf-8";
 /// answers, even with an empty device pool - that is what `/readyz` is for.
 pub async fn healthz(State(state): State<AppState>) -> Response {
     match device_report(&state).await {
-        Ok((_, body)) => (StatusCode::OK, [(header::CONTENT_TYPE, JSON_CT)], body).into_response(),
-        Err(response) => response,
+        Some((_, body)) => {
+            (StatusCode::OK, [(header::CONTENT_TYPE, JSON_CT)], body).into_response()
+        }
+        None => json_error(StatusCode::INTERNAL_SERVER_ERROR, "health check failed"),
     }
 }
 
@@ -28,20 +30,25 @@ pub async fn healthz(State(state): State<AppState>) -> Response {
 /// for the first ten to twenty seconds.
 pub async fn readyz(State(state): State<AppState>) -> Response {
     match device_report(&state).await {
-        Ok((devices, body)) if devices > 0 => {
+        Some((devices, body)) if devices > 0 => {
             (StatusCode::OK, [(header::CONTENT_TYPE, JSON_CT)], body).into_response()
         }
-        Ok((devices, _)) => (
+        Some((devices, _)) => (
             StatusCode::SERVICE_UNAVAILABLE,
             [(header::CONTENT_TYPE, JSON_CT)],
             serde_json::json!({ "status": "starting", "devices": devices }).to_string(),
         )
             .into_response(),
-        Err(response) => response,
+        None => json_error(StatusCode::INTERNAL_SERVER_ERROR, "health check failed"),
     }
 }
 
-async fn device_report(state: &AppState) -> Result<(u64, Vec<u8>), Response> {
+/// The device count and the core's `/health` payload, or `None` when the
+/// dispatcher could not produce one.
+///
+/// `Option` rather than `Result<_, Response>`: `Response` is a large type, and
+/// returning it as an error variant makes every `Result` in this file carry it.
+async fn device_report(state: &AppState) -> Option<(u64, Vec<u8>)> {
     let request = Request {
         method: "GET".to_string(),
         path: "/health".to_string(),
@@ -51,9 +58,9 @@ async fn device_report(state: &AppState) -> Result<(u64, Vec<u8>), Response> {
         .await
         .into_bytes()
         .await
-        .map_err(|_| json_error(StatusCode::INTERNAL_SERVER_ERROR, "health check failed"))?;
+        .ok()?;
     let devices = count_devices(&body);
-    Ok((devices, body))
+    Some((devices, body))
 }
 
 fn count_devices(body: &[u8]) -> u64 {
