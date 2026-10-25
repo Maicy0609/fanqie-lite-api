@@ -50,6 +50,22 @@ impl Harness {
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base)
     }
+
+    /// Writes a file into the core's media cache and returns its `/src/` path.
+    fn media(&self, name: &str, contents: &[u8]) -> String {
+        let src = self.dir.join("src");
+        std::fs::create_dir_all(&src).expect("src dir");
+        std::fs::write(src.join(name), contents).expect("write media");
+        format!("/src/{name}")
+    }
+}
+
+fn header<'a>(response: &'a reqwest::Response, name: &str) -> &'a str {
+    response
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
 }
 
 /// Test directories must be unique per *call*, not per timestamp: eight tests
@@ -307,4 +323,108 @@ async fn a_bad_request_parameter_is_a_400_from_the_core() {
         400,
         "the core's BadRequest must survive the transport"
     );
+}
+
+#[tokio::test]
+async fn cached_media_is_served_with_a_bearer_token() {
+    let h = start("secret", false, 5).await;
+    let path = h.media("clip.mp4", b"0123456789");
+    let response = client()
+        .get(h.url(&path))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        header(&response, "referrer-policy"),
+        "no-referrer",
+        "a media URL may carry the token in its query string"
+    );
+    assert_eq!(header(&response, "cache-control"), "private, max-age=3600");
+    assert_eq!(response.bytes().await.expect("body").as_ref(), b"0123456789");
+}
+
+#[tokio::test]
+async fn cached_media_accepts_the_token_in_the_query() {
+    let h = start("secret", false, 5).await;
+    let path = h.media("img_abc.jpg", b"jpegbytes");
+    let response = client()
+        .get(format!("{}?token=secret", h.url(&path)))
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.expect("body").as_ref(), b"jpegbytes");
+}
+
+#[tokio::test]
+async fn cached_media_without_a_valid_credential_is_rejected() {
+    let h = start("secret", false, 5).await;
+    let path = h.media("clip.mp4", b"x");
+
+    let anonymous = client().get(h.url(&path)).send().await.expect("get");
+    assert_eq!(anonymous.status(), 401);
+
+    let wrong = client()
+        .get(format!("{}?token=guess", h.url(&path)))
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(wrong.status(), 401);
+}
+
+#[tokio::test]
+async fn anonymous_read_does_not_open_cached_media() {
+    let h = start("secret", true, 5).await;
+    let path = h.media("clip.mp4", b"x");
+    let response = client().get(h.url(&path)).send().await.expect("get");
+    assert_eq!(
+        response.status(),
+        401,
+        "cached media is the content itself, not metadata"
+    );
+}
+
+#[tokio::test]
+async fn the_query_token_does_not_open_api_routes() {
+    let h = start("secret", false, 5).await;
+    let response = client()
+        .get(h.url("/api/v1/search?query=x&token=secret"))
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(response.status(), 401, "the query form is media-only");
+}
+
+#[tokio::test]
+async fn a_range_request_returns_206_with_content_range() {
+    let h = start("secret", false, 5).await;
+    let path = h.media("clip.mp4", b"0123456789");
+    let response = client()
+        .get(h.url(&path))
+        .bearer_auth("secret")
+        .header("range", "bytes=0-3")
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(response.status(), 206);
+    assert_eq!(header(&response, "content-range"), "bytes 0-3/10");
+    assert_eq!(header(&response, "accept-ranges"), "bytes");
+    assert_eq!(response.bytes().await.expect("body").as_ref(), b"0123");
+}
+
+#[tokio::test]
+async fn an_unsatisfiable_range_returns_416() {
+    let h = start("secret", false, 5).await;
+    let path = h.media("clip.mp4", b"0123456789");
+    let response = client()
+        .get(h.url(&path))
+        .bearer_auth("secret")
+        .header("range", "bytes=100-200")
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(response.status(), 416);
+    assert_eq!(header(&response, "content-range"), "bytes */10");
 }

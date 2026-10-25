@@ -6,7 +6,8 @@
 > 遵循 `docs/CODING.md`：最小改动、优先复用、严控依赖、尊重原项目
 
 > **进度**：Phase 0（骨架移植）✓　Phase 1（HTTP 服务壳）✓　Phase 2（数据目录与设备池）✓
-> 下一步 Phase 3（媒体）。实际偏离与验证记录见 `docs/UPSTREAM.md`。
+> Phase 3（媒体）✓　下一步 Phase 4（stdout 日志与部署）。
+> 实际偏离与验证记录见 `docs/UPSTREAM.md`。
 
 ---
 

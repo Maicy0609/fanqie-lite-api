@@ -105,11 +105,12 @@ Phase 0 时 47 个源文件逐字节一致；Phase 2 之后 `server.rs` 与 `dev
 |---|---|---|
 | 严格编译 | `cargo check --all-targets` | 通过，零警告 |
 | 严格 lint | `cargo clippy --all-targets -- -D warnings` | 通过 |
-| 全量测试 | `cargo test --workspace` | **216 passed / 0 failed**（core 182 + server 34），连续三轮一致 |
+| 全量测试 | `cargo test --workspace` | **225 passed / 0 failed**（core 182 + server 43） |
 | 测试资产一致性 | 见下方脚本 | 19 个文件逐字节一致 |
 | 未改动源码一致性 | 见下方脚本 | 45 个文件逐字节一致 |
 | 真实上游端到端 | 见 §4.2 | 搜索、目录均返回真实数据 |
 | 加密与监听 | 见 §4.3 | 明文池启动即加密；只有一个监听端口 |
+| 媒体鉴权与 Range | 见 §4.4 | 401 / 200 / 206 / 416 全部符合预期 |
 
 一致性检查必须比对**上游仓库内容**，不能比对上游工作树：Windows 上
 `core.autocrlf=true` 会把上游 checkout 成 CRLF，直接 `diff -r` 会得到满屏假差异。
@@ -147,9 +148,9 @@ fqapi_core  unittests (src/lib.rs)   80
             router_contract           2
             static_and_loopback      17
             video_codec_gate          9
-fqapi_server unittests (lib)         23
+fqapi_server unittests (lib)         25
              unittests (main)         2
-             tests/http.rs            9
+             tests/http.rs           16
 ```
 
 ### 4.2 真实上游端到端（Phase 1 验收）
@@ -189,9 +190,26 @@ fqapi_server unittests (lib)         23
 最后一项是刻意设计的：密钥缺失时**拒绝启动**，而不是悄悄生成新密钥。新密钥打不开旧池，
 池会以空状态加载，然后重新注册 5 个设备——旧身份就永久丢了。
 
+### 4.4 Phase 3 媒体（真实二进制 + 真实 socket）
+
+`--data-dir target/e2e4`（预置 5 个设备 + `src/clip.mp4` 16 字节），`--token media-token`：
+
+| 请求 | 结果 |
+|---|---|
+| `GET /src/clip.mp4`（无凭证） | `401` |
+| `GET /src/clip.mp4?token=media-token` | `200`，`content-type: video/mp4`、`accept-ranges: bytes`、`referrer-policy: no-referrer`、`cache-control: private, max-age=3600` |
+| `Range: bytes=0-3` | `206`，`content-range: bytes 0-3/16`，body `0123` |
+| `Range: bytes=4-7` | `206`，body `4567` |
+| `Range: bytes=99-` | `416` |
+| `GET /api/v1/search?query=x&token=media-token` | `401`（query 凭证仅限媒体） |
+
+**Phase 3 没有改动任何 core 文件。** 媒体服务、Range/416、缓存预算（512 MiB，LRU）
+上游已经实现并且有测试（`video.rs` 的 `prune_src_cache_with_budget` 单测、`static_files`
+的 Range 测试）。这一阶段只补了两件 server 侧的事：媒体路径的凭证策略，以及响应头加固。
+
 ---
 
-## 5. 待办偏离（Phase 3 及以后）
+## 5. 待办偏离（Phase 4 及以后）
 
 按 `docs/PORTING-ANALYSIS.md` 的计划，以下改动尚未实施。每实施一项，**必须**在 §3 追加记录。
 
@@ -200,7 +218,7 @@ fqapi_server unittests (lib)         23
 | 1 | `device/mod.rs::get()` / `get_by_id()` 的写盘改为脏标记 + 后台 flush | — | **不做（撤回）**，理由见下 |
 | 2 | 公开监听层（鉴权 / CORS / 限流 / 探针） | Phase 1 | **已完成**，见 `crates/fqapi-server`（未改 `server.rs` 的既有行为） |
 | 3 | 设备池 key 来源改为 `<data-dir>/pool.key` | Phase 2 | **已完成**，见 §4.3 |
-| 4 | 媒体代理模式（可选，`--media-proxy`） | Phase 3 | 待办 |
+| 4 | 媒体代理模式（`--media-proxy`）与签名 URL + TTL | Phase 3 | **不做（重新定义）**，理由见下 |
 | 5 | `core_log` 增加 stdout 输出 | Phase 4 | 待办 |
 | 6 | `error.rs` 增加可选 `code` 字段 | 延后 | 暂无消费方，避免加入未被使用的抽象 |
 | 7 | `video.rs::handle_pseries` 的 `eprintln!` 改为 `log::warn!` | — | **不做**：上游那样写是因为 Android 没有控制台；服务端 stderr 本来就会被采集 |
@@ -216,6 +234,24 @@ fqapi_server unittests (lib)         23
 
 用扩大偏离面 + 改上游测试，去换一个在真实负载下测不出来的收益，不划算。如果将来压测
 证明它是瓶颈，再按脏标记 + 后台 flush 重做，并同步更新该测试。
+
+**为什么第 4 项改成"不做"。** 计划里写的是"新增 `/media/v/{id}`、`/media/img/{hash}`，
+URL 带 HMAC 签名和 24 小时 TTL"。落地时发现两件事：
+
+1. **代理已经存在。** `/src/*` 就是代理：核心把解密后的视频与漫画图写进 `src_dir`，
+   `static_files::serve` 带 Range/HEAD/416 提供出去。再加一套 `/media/*` 只是同一份
+   能力的第二个名字，属于"为了形式上的单一职责制造包装层"。
+2. **签名 URL 需要改写响应，而改写会打断现有客户端。** 客户端靠前缀识别媒体
+   （`fqapp/lib/services/episode_source_cache.dart` 的 `_extractVideoUrl` 只认
+   `http(s)://` 与 `/src/`）。把响应里的 `/src/` 换成 `/media/...?s=...`，客户端会
+   直接丢掉这个 URL。要做得对，得同时改客户端——那不是移植期该做的事。
+
+所以采用最小方案：`/src/*` 额外接受 `?token=` 查询参数（`<img>`/`<video>` 发不了
+header），并给媒体响应加 `Referrer-Policy: no-referrer` 与 `Cache-Control: private`。
+代价是 token 可能出现在浏览器历史或代理日志里；这是明确的取舍，不是疏忽。
+
+**将来真需要"把媒体链接交给第三方"时**再做签名 URL，届时的前提是客户端能接受
+`/media/*` 前缀——那是一次协议变更，必须和客户端一起改。
 
 **明确不做**（登记为技术债，不在移植期清理）：
 

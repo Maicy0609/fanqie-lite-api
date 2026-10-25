@@ -8,32 +8,39 @@
 //! token, and `--anonymous-read` is the explicit opt-out for readers such as
 //! Legado book sources.
 //!
-//! Two route families keep requiring a token even under `--anonymous-read`:
+//! Three route families keep requiring a token even under `--anonymous-read`:
 //!
 //! * `/api/v1/account/*` forwards a user's upstream cookie, which must never be
 //!   reachable by an unauthenticated caller;
 //! * the device-bound write routes (`fqapi_core::dispatch::requires_capability`)
-//!   post comments and danmaku as this installation's device identity.
+//!   post comments and danmaku as this installation's device identity;
+//! * `/src/*` is the decrypted content itself, not metadata.
+//!
+//! `/src/*` additionally accepts the token as a `?token=` query parameter. An
+//! `<img>` or `<video>` tag cannot send an `Authorization` header, and the
+//! alternative - rewriting `/src/` paths in responses into signed URLs - would
+//! break the existing client, which recognises media by that exact prefix
+//! (`fqapp/lib/services/episode_source_cache.dart`). The cost is that the token
+//! can appear in a browser's history or a proxy log; responses therefore carry
+//! `Referrer-Policy: no-referrer` and `Cache-Control: private`, and the query
+//! form is accepted for media paths only.
 
 use axum::extract::{Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use fqapi_core::dispatch::requires_capability;
+use fqapi_core::endpoints::Params;
 
-use crate::http::{json_error, AppState};
+use crate::http::{is_media_path, json_error, AppState};
 
 pub async fn require_token(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    if !needs_token(request.uri().path(), state.anonymous_read) {
+    let path = request.uri().path().to_string();
+    if !needs_token(&path, state.anonymous_read) {
         return next.run(request).await;
     }
 
-    let presented = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(bearer);
-    if let Some(presented) = presented {
+    if let Some(presented) = presented_token(&request, &path) {
         if state
             .tokens
             .iter()
@@ -50,10 +57,33 @@ fn needs_token(path: &str, anonymous_read: bool) -> bool {
     if path.starts_with("/api/v1/account/") {
         return true;
     }
+    if is_media_path(path) {
+        return true;
+    }
     if requires_capability(path) {
         return true;
     }
     !anonymous_read
+}
+
+/// The credential this request presents, if any.
+///
+/// The query form is deliberately limited to media: accepting it anywhere would
+/// turn every URL into a bearer credential.
+fn presented_token(request: &Request, path: &str) -> Option<String> {
+    if let Some(token) = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(bearer)
+    {
+        return Some(token.to_string());
+    }
+    if is_media_path(path) {
+        let params = Params::parse(request.uri().query().unwrap_or(""));
+        return params.get("token").map(str::to_string);
+    }
+    None
 }
 
 /// Extracts the token from `Bearer <token>`, scheme case-insensitively.
@@ -102,6 +132,26 @@ mod tests {
         // Account routes carry a user cookie.
         assert!(needs_token("/api/v1/account/fanqie/library", true));
         assert!(needs_token("/api/v1/account/fanqie/history", true));
+    }
+
+    #[test]
+    fn cached_media_is_never_anonymous() {
+        // `/src/*` is the decrypted content, not metadata: opening it with
+        // `--anonymous-read` would publish every cached episode.
+        assert!(needs_token("/src", true));
+        assert!(needs_token("/src/clip.mp4", true));
+        assert!(needs_token("/src/img_abc.jpg", true));
+    }
+
+    #[test]
+    fn the_media_namespace_is_matched_exactly() {
+        assert!(is_media_path("/src"));
+        assert!(is_media_path("/src/"));
+        assert!(is_media_path("/src/a.mp4"));
+        // A prefix match without the separator would capture unrelated paths.
+        assert!(!is_media_path("/srcx"));
+        assert!(!is_media_path("/api/v1/src/a.mp4"));
+        assert!(!is_media_path("/api/v1/search"));
     }
 
     #[test]

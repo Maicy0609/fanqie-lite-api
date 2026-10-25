@@ -78,6 +78,13 @@ pub fn router(state: AppState) -> Result<Router, String> {
     Ok(app.with_state(state))
 }
 
+/// The cached-media namespace, served by `fqapi_core::static_files`.
+///
+/// Matched exactly: `/srcx` is not media, and neither is `/api/v1/src/...`.
+pub(crate) fn is_media_path(path: &str) -> bool {
+    path == "/src" || path.starts_with("/src/")
+}
+
 async fn dispatch_handler(State(state): State<AppState>, request: Request) -> Response {
     let permit = match state.semaphore.clone().acquire_owned().await {
         Ok(permit) => permit,
@@ -106,6 +113,7 @@ async fn dispatch_handler(State(state): State<AppState>, request: Request) -> Re
             })
             .collect(),
     };
+    let media = is_media_path(&core_request.path);
 
     // Dropping this future is the cancellation. hyper drops the handler future
     // when the client disconnects, which tears down the awaiting upstream
@@ -118,10 +126,24 @@ async fn dispatch_handler(State(state): State<AppState>, request: Request) -> Re
     .await;
     drop(permit);
 
-    match outcome {
+    let mut response = match outcome {
         Ok(response) => to_http(response).await,
         Err(_) => json_error(StatusCode::GATEWAY_TIMEOUT, "timeout"),
+    };
+    if media {
+        // Media accepts its credential in the query string (an `<img>` tag
+        // cannot send a header), so keep that URL out of referrers and out of
+        // shared caches.
+        response.headers_mut().insert(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        );
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, max-age=3600"),
+        );
     }
+    response
 }
 
 /// Converts a core response, streaming file bodies instead of buffering them.

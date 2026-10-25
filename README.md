@@ -3,7 +3,7 @@
 把 [fqapp](https://github.com/ch6vip/fqapp) 的后端（Rust 核心）移植为**独立 HTTP 服务**，
 让前端可以多平台复用、前后端分离、并接入第三方工具。
 
-当前状态：**Phase 2 完成**（骨架移植 + HTTP 服务壳 + 数据目录与设备池）。
+当前状态：**Phase 3 完成**（骨架移植 + HTTP 服务壳 + 数据目录与设备池 + 媒体）。
 业务代码 95% 原样搬自上游。
 
 ## 快速开始
@@ -55,11 +55,35 @@ data/
 
 ### 鉴权
 
-所有 `/api/v1/*` 默认要求 `Authorization: Bearer <token>`。两条例外：
+所有 `/api/v1/*` 默认要求 `Authorization: Bearer <token>`。三条例外：
 
 - `/healthz`、`/readyz` 永远开放（探针没有令牌）
 - `--anonymous-read` 下只读路由开放，但**设备绑定写路由**（发评论、发弹幕、点赞）与
   `/api/v1/account/*` 仍必须带令牌
+- `/src/*`（缓存媒体）也永远要令牌 —— 它是内容本身，不是元数据，`--anonymous-read`
+  不应该把已缓存的剧集公开出去
+
+### 媒体
+
+服务端有两条媒体路径，由客户端按请求选择，不需要服务端开关：
+
+| 路径 | 行为 | 适用 |
+|---|---|---|
+| `GET /api/v1/videos/{id}?mode=stream` | 返回 CDN 地址 + `key_hex`，**服务端不落地** | 客户端能自己解 CENC（原生 App） |
+| `GET /api/v1/videos/{id}` | 服务端下载、解密、缓存，返回 `/src/{id}.mp4` | 客户端不想管解密；支持离线 |
+| `GET /api/v1/manga/{id}` | 服务端解密每张图，返回 `/src/img_{sha256}.jpg` | 漫画没有透传模式，图片是 AES-GCM 加密 |
+
+缓存统一放在 `<data-dir>/src`，预算 512 MiB，超出按最久未用淘汰（`.part` 下载中的文件
+不参与统计）。`/src/*` 支持 `Range`，可以直接喂给 `<video>` 或播放器。
+
+```bash
+# 浏览器/标签发不了 header，媒体路径接受 query 形式的凭证
+curl -H "Range: bytes=0-1023" \
+     "http://127.0.0.1:18921/src/<id>.mp4?token=change-me"
+```
+
+`?token=` 只在 `/src/*` 生效，打 API 会被拒绝。响应带 `Referrer-Policy: no-referrer`
+和 `Cache-Control: private`，避免这条 URL 从 referrer 或共享缓存里漏出去。
 
 ## 目录
 
@@ -91,13 +115,13 @@ docs/
 ```bash
 cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace   # 216 passed
+cargo test --workspace   # 225 passed
 ```
 
 ## 部署前必须知道
 
-- 媒体仍走上游的 `/src/*` 落盘路径（Phase 3 才做透传/代理两种模式）。代理模式之前，
-  服务端会缓存解密后的漫画图与视频。
+- 默认的视频路径会**在服务端缓存解密后的整集**（`<data-dir>/src`，512 MiB 上限）。
+  如果不想让服务端持有明文内容，让客户端改用 `?mode=stream`。
 - 只有文件日志（`<data-dir>/rust.log`），stdout 结构化日志在 Phase 4。
 - 单实例设计。多实例会各自注册设备，上游看到 N 倍注册量，更容易触发风控。
 - 池里 5–20 个身份共享同一个出口 IP，比单设备更容易被风控识别。适合个人或小团队。
