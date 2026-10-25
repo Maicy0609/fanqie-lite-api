@@ -139,7 +139,7 @@ async fn add_token(State(state): State<AppState>, request: Request) -> Response 
             Ok(()) => axum::Json(json!({ "ok": true })).into_response(),
             Err(message) => json_error(StatusCode::BAD_REQUEST, &message),
         },
-        Err(response) => response,
+        Err((status, message)) => json_error(status, message),
     }
 }
 
@@ -152,7 +152,7 @@ async fn remove_token(State(state): State<AppState>, request: Request) -> Respon
             Ok(()) => axum::Json(json!({ "ok": true })).into_response(),
             Err(message) => json_error(StatusCode::BAD_REQUEST, &message),
         },
-        Err(response) => response,
+        Err((status, message)) => json_error(status, message),
     }
 }
 
@@ -173,19 +173,23 @@ async fn refill(State(state): State<AppState>, request: Request) -> Response {
     }
 }
 
-async fn body_token(request: Request) -> Result<String, Response> {
+/// The `token` field of a JSON body.
+///
+/// The error is `(StatusCode, &'static str)` rather than a `Response`:
+/// `Response` is over 128 bytes and clippy rejects it as an error variant.
+async fn body_token(request: Request) -> Result<String, (StatusCode, &'static str)> {
     let body = axum::body::to_bytes(request.into_body(), MAX_LOGIN_BODY)
         .await
-        .map_err(|_| json_error(StatusCode::BAD_REQUEST, "请求体过大"))?;
-    let value: serde_json::Value = serde_json::from_slice(&body)
-        .map_err(|_| json_error(StatusCode::BAD_REQUEST, "请求体不是 JSON"))?;
+        .map_err(|_| (StatusCode::BAD_REQUEST, "请求体过大"))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|_| (StatusCode::BAD_REQUEST, "请求体不是 JSON"))?;
     let token = value
         .get("token")
         .and_then(|token| token.as_str())
         .unwrap_or("")
         .to_string();
     if token.trim().is_empty() {
-        return Err(json_error(StatusCode::BAD_REQUEST, "缺少 token"));
+        return Err((StatusCode::BAD_REQUEST, "缺少 token"));
     }
     Ok(token)
 }
