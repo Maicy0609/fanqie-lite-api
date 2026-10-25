@@ -213,6 +213,7 @@ CI（`.github/workflows/ci.yml`）跑五道门槛：fmt+clippy、cargo test、�
 - 上游怎么工作的 → `docs/backend-analysis.md`
 - **接口怎么调** → `docs/API.md`
 - 怎么移植、接口怎么设计 → `docs/PORTING-ANALYSIS.md`
+- **前端怎么接过来** → `docs/CLIENT-MIGRATION.md`
 - 改了上游哪些地方、怎么验证的 → `docs/UPSTREAM.md`
 
 ## 许可
