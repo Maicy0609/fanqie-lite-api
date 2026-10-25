@@ -269,6 +269,19 @@ pub async fn base_url() -> String {
         _ => String::new(),
     }
 }
+
+/// The live dispatcher, or `None` when the core is stopped.
+///
+/// [request] is the id-keyed entry point the Flutter bridge needed: it
+/// materialises every response into memory (capped at
+/// `static_files::FFI_BODY_LIMIT`) because the bridge returns a `Vec<u8>`. A
+/// server needs neither the id nor that cap - dropping the handler future is
+/// already a cancellation, and `/src/*` media must stream. It therefore takes
+/// the dispatcher and calls it directly.
+pub async fn server() -> Option<Arc<Server>> {
+    CORE.read().await.as_ref().map(|core| core.server.clone())
+}
+
 /// Per-launch capability of the loopback adapter.
 ///
 /// Every request the adapter accepts must carry it: as a `/_session/<cap>`

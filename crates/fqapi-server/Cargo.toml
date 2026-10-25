@@ -1,0 +1,30 @@
+[package]
+name = "fqapi-server"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "HTTP front end for fqapi_core"
+license = "GPL-3.0-only"
+
+[lib]
+name = "fqapi_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fqapi-server"
+path = "src/main.rs"
+
+[dependencies]
+fqapi_core = { path = "../fqapi-core" }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower-http = { version = "0.6", default-features = false, features = ["cors"] }
+serde_json = "1"
+log = "0.4"
+
+[dev-dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+# Only to install the process-wide crypto provider before the test client is
+# built; `reqwest` is linked with `rustls-no-provider` on purpose.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

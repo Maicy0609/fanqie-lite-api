@@ -73,7 +73,7 @@ Phase 0 的目标是"骨架，不改行为"。因此偏离只有"删掉不存在
 | 文件 | 改动 | 行为影响 |
 |---|---|---|
 | `src/lib.rs` | 删 `mod frb_generated;`、`#[cfg(target_os = "windows")] mod desktop_media;`；`pub mod api` → `pub mod runtime`；文档注释改写 | 无 |
-| `src/runtime/mod.rs` | ① 模块文档改写；② `set_device_pool_key` 文档改写（同时修掉上游"Backend core version."的错位文档）；③ `init` 中 `core_log::install` 去掉 `#[cfg(target_os = "android")]` 门禁 | **有**：非 Android 构建现在也会写 `rust.log`。这是服务端必需的行为 |
+| `src/runtime/mod.rs` | ① 模块文档改写；② `set_device_pool_key` 文档改写（同时修掉上游"Backend core version."的错位文档）；③ `init` 中 `core_log::install` 去掉 `#[cfg(target_os = "android")]` 门禁；④ 新增 `pub async fn server() -> Option<Arc<Server>>`（9 行，含文档） | **有**：非 Android 构建现在也会写 `rust.log`；④ 只是暴露既有字段，不改变行为 |
 | `src/core_log.rs` | 删 `android_logger` 分支：`LOGCAT_TAG` 常量、`CoreLogger.android` 字段、`new()` 中的初始化、`log()` 中的镜像、`flush()` 中的转发；文档注释同步 | **有**：不再镜像到 logcat（服务端没有 logcat） |
 | `Cargo.toml` | 删 `flutter_rust_bridge`、`android_logger`、`[build-dependencies] cc`、`[target.'cfg(windows)'.dependencies] reqwest/blocking`；`crate-type` 改为 `["rlib"]` | 无 |
 | 根 `Cargo.toml` | 新增 workspace；`[profile.*]` 从成员清单移到根（Cargo 只认根 profile） | 无 |
@@ -100,9 +100,10 @@ src/upstream/**        tests/**              testdata/**
 |---|---|---|
 | 严格编译 | `cargo check --all-targets` | 通过，零警告 |
 | 严格 lint | `cargo clippy --all-targets -- -D warnings` | 通过 |
-| 全量测试 | `cargo test` | **182 passed / 0 failed** |
+| 全量测试 | `cargo test` | **209 passed / 0 failed**（core 182 + server 27） |
 | 测试资产一致性 | 见下方脚本 | 19 个文件逐字节一致 |
 | 未改动源码一致性 | 见下方脚本 | 47 个文件逐字节一致 |
+| 真实上游端到端 | 见 §4.2 | 搜索、目录均返回真实数据 |
 
 一致性检查必须比对**上游仓库内容**，不能比对上游工作树：Windows 上
 `core.autocrlf=true` 会把上游 checkout 成 CRLF，直接 `diff -r` 会得到满屏假差异。
@@ -127,36 +128,60 @@ done
 测试分布：
 
 ```
-unittests (src/lib.rs)              80
-crypto_vectors                      13
-device_pool                          9
-device_pool_encrypted                1
-device_pool_no_key                   1
-filter_config                        4
-loopback_guard                      13
-manga_end_to_end                     3
-mock_upstream_contract               7
-playlet_interaction_contract        23
-router_contract                      2
-static_and_loopback                 17
-video_codec_gate                     9
+fqapi_core  unittests (src/lib.rs)   80
+            crypto_vectors           13
+            device_pool               9
+            device_pool_encrypted     1
+            device_pool_no_key        1
+            filter_config             4
+            loopback_guard           13
+            manga_end_to_end          3
+            mock_upstream_contract    7
+            playlet_interaction      23
+            router_contract           2
+            static_and_loopback      17
+            video_codec_gate          9
+fqapi_server unittests (lib)         16
+             unittests (main)         2
+             tests/http.rs            9
 ```
+
+### 4.2 真实上游端到端（Phase 1 验收）
+
+2026-10-25，本机 Windows，`--data-dir target/e2e --token <t> --listen 127.0.0.1:19021`：
+
+| 请求 | 结果 |
+|---|---|
+| `GET /healthz`（无 token） | `200 {"devices":0,"status":"ok"}` |
+| `GET /readyz`（池空） | `503 {"status":"starting","devices":0}` |
+| `GET /api/v1/search?query=剑来`（无 token） | `401 {"success":false,...}` |
+| `GET /api/v1/search?query=剑来`（带 token） | `200`，返回真实搜索结果（含 `book_data`） |
+| `GET /readyz`（注册后） | `200 {"devices":5,"status":"ok"}` |
+| `GET /api/v1/books/<id>/directory`（带 token） | `200`，659 KB JSON |
+
+冷启动耗时约 20 秒（5 个设备 × 注册流程内的 2 秒停顿），期间 `readyz` 一直是 503 ——
+这正是 `/readyz` 存在的原因。
+
+**本次验证暴露的缺口**：池文件当时以**明文**写入（`rust.log` 有
+`saving device pool unencrypted: no pool key provisioned` 警告），里面是 5 个真实设备的
+`secret_key`。这是 Phase 2 的第一项，在完成前**不适合部署到任何真实环境**。
 
 ---
 
-## 5. 待办偏离（Phase 1 及以后）
+## 5. 待办偏离（Phase 2 及以后）
 
 按 `docs/PORTING-ANALYSIS.md` 的计划，以下改动尚未实施。每实施一项，**必须**在 §3 追加记录。
 
-| # | 内容 | 阶段 | 性质 |
+| # | 内容 | 阶段 | 状态 |
 |---|---|---|---|
-| 1 | `device/mod.rs::get()` / `get_by_id()` 的写盘改为脏标记 + 后台 flush | Phase 2 | 行为变更（落盘时机） |
-| 2 | `server.rs` 替换为公开监听（鉴权 / CORS / 限流） | Phase 1 | 行为变更 |
-| 3 | 设备池 key 来源改为 `<data-dir>/pool.key` | Phase 2 | 行为变更 |
-| 4 | 媒体代理模式（可选，`--media-proxy`） | Phase 3 | 新增能力 |
-| 5 | `core_log` 增加 stdout 输出 | Phase 4 | 新增能力 |
-| 6 | `error.rs` 增加可选 `code` 字段 | Phase 1 | 向后兼容的新增 |
-| 7 | `video.rs::handle_pseries` 的 5 处 `eprintln!` 改为 `log::warn!` | Phase 1 | 修复（上游缺陷） |
+| 1 | `device/mod.rs::get()` / `get_by_id()` 的写盘改为脏标记 + 后台 flush | Phase 2 | 待办 |
+| 2 | 公开监听层（鉴权 / CORS / 限流 / 探针） | Phase 1 | **已完成**，见 `crates/fqapi-server`（未改 `server.rs`，另建传输层） |
+| 3 | 设备池 key 来源改为 `<data-dir>/pool.key` | Phase 2 | 待办（**部署前必须完成**，当前为明文） |
+| 4 | 媒体代理模式（可选，`--media-proxy`） | Phase 3 | 待办 |
+| 5 | `core_log` 增加 stdout 输出 | Phase 4 | 待办 |
+| 6 | `error.rs` 增加可选 `code` 字段 | 延后 | 暂无消费方，避免加入未被使用的抽象 |
+| 7 | `video.rs::handle_pseries` 的 `eprintln!` 改为 `log::warn!` | **不做** | 上游那样写是因为 Android 没有控制台；服务端 stderr 本来就会被采集，改它只是徒增偏离面 |
+| 8 | `runtime::init` 支持不启动 loopback 适配器 | Phase 2 | 待办（当前用 port 0 挂一个用不到的临时监听） |
 
 **明确不做**（登记为技术债，不在移植期清理）：
 

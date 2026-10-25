@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/fqapi-core"]
+members = ["crates/fqapi-core", "crates/fqapi-server"]
 
 # Profiles only take effect at the workspace root; member manifests cannot
 # override them. These are carried over from the upstream `fqapp/rust` crate
