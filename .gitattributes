@@ -1,0 +1,40 @@
+# Line endings are pinned rather than left to `core.autocrlf`.
+#
+# This matters for one concrete reason: the ported fixtures under
+# `crates/fqapi-core/testdata/` must stay byte-identical to upstream, and the
+# Phase 0 acceptance check is `diff -r testdata`. On a Windows checkout with
+# `core.autocrlf=true` an unpinned `*.json` comes out CRLF and that check fails
+# for no real reason.
+
+# Rust sources and fixtures: LF everywhere.
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.lock  text eol=lf
+crates/fqapi-core/testdata/** text eol=lf
+
+# Docs and scripts.
+*.md    text eol=lf
+*.sh    text eol=lf
+
+# Licence text has no extension, so it needs an explicit rule.
+LICENSE text eol=lf
+NOTICE  text eol=lf
+
+# Dotfiles are parsed by tooling that expects LF.
+.gitattributes text eol=lf
+.gitignore     text eol=lf
+
+# PowerShell is line-ending agnostic; CRLF keeps Windows editors happy.
+*.ps1   text eol=crlf
+
+# Patches must keep LF, or `git apply` rejects the context lines.
+*.patch text eol=lf whitespace=-blank-at-eol,-space-before-tab
+
+# Binary assets: never mangle these.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.webp binary
+*.ico  binary
+*.so   binary
+*.a    binary

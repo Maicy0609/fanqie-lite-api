@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/fqapi-core"]
+
+# Profiles only take effect at the workspace root; member manifests cannot
+# override them. These are carried over from the upstream `fqapp/rust` crate
+# unchanged, except for the comment about panics (there is no FFI bridge here).
+[profile.release]
+# Size-conscious but not size-obsessed: chapter/crypto work must not regress.
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+# NOTE: panics must unwind. A handler panic has to stay inside its own request
+# (the connection dies, the process keeps serving); `panic = "abort"` would take
+# the whole server down on one malformed upstream response.
+[profile.dev]
+# Windows/MSVC embeds full debug info into every linked binary by default: each
+# test executable came out at 180-200 MB and `target/debug/deps` grew to 10.9 GB.
+# The dev profile here is only a host test build (shipping code is a release
+# build), so those symbols buy nothing and cost most of the disk budget.
+# Set `debug = 1` temporarily if you need file:line frames in a backtrace.
+debug = 0

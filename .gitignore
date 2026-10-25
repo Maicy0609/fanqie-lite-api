@@ -1,0 +1,40 @@
+# ---- Rust build output ----
+/target/
+**/target/
+**/*.rs.bk
+
+# ---- Runtime data ----
+# The service writes everything it owns under its data dir: the device pool,
+# the pool encryption key, the media cache and the rotating log. None of it is
+# source, and the pool holds per-device secret keys.
+/data/
+pool.key
+*.corrupt-*
+
+# ---- Logs / coverage / profiling ----
+*.log
+/coverage/
+lcov.info
+perf.data*
+
+# ---- Local overrides and secrets ----
+.env
+.env.*
+!.env.example
+
+# ---- Editor / OS ----
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Local agent workspace data (not source) ----
+.workbuddy-ai/
+
+# ---- Scratch ----
+/build/
+/tmp/
+*.tmp
