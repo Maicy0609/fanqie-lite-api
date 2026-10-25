@@ -296,6 +296,14 @@ fqapi-server listening on http://0.0.0.0:18921
 | `clients/python` 单测（假服务器） | 8 passed |
 | `clients/python/e2e.py`（真二进制 + 模拟上游） | 7 项全过 |
 | e2e 内置的文档探测 | 58 条文档路径全部非 404 |
+| GitHub Actions（5 个 job） | 全绿 |
+
+**CI 第一次跑挂了，原因值得记下**：GitHub 的 `stable` 是 1.99，本地是 1.96，新版多出
+`clippy::result_large_err`。`health.rs` 原本返回 `Result<(u64, Vec<u8>), Response>`，
+而 `Response` 有 128 字节以上，被要求换掉。改成 `Option` 后五个 job 全绿。
+
+教训：**本地 lint 干净不等于 CI 干净**——工具链版本会引入新 lint。这类问题只有让 CI
+真跑一遍才会暴露。
 
 ---
 
