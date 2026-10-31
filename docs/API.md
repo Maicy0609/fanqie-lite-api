@@ -1,6 +1,6 @@
 # API 参考
 
-服务端把番茄小说 / 短剧 / 漫画 / 听书的上游接口包装成 46 个端点、57 条路径。
+服务端把番茄小说 / 短剧 / 漫画 / 听书的上游接口包装成 47 个端点、58 条路径。
 **响应是上游 JSON 原样透传**——字段名、层级、`code` 字段都不改写，服务端只做三件事：
 注入签名、解密正文、把媒体落盘成 `/src/...`。
 
@@ -35,11 +35,13 @@
 
 | 路径 | 说明 |
 |---|---|
-| `GET /src/{file}` | 服务端解密后缓存的媒体。支持 `Range` / `HEAD`，不可满足返回 `416` |
+| `GET /src/{file}` | 服务端缓存并解密的媒体。支持 `Range` / `HEAD`，不可满足返回 `416` |
 
-`/api/v1/videos/{id}` 不带 `mode` 时会把整集下载并解密到 `/src/{video_id}.mp4`；
-带 `?mode=stream` 则只返回 CDN 地址与 `key_hex`，服务端不落地。漫画没有透传模式，
-图片一律解密后以 `/src/img_{sha256}.{ext}` 提供。
+`/api/v1/videos/{id}` 不带 `mode` 时会把整集下载并以 **CENC 密文**缓存为 `/src/{video_id}.mp4`，
+内容密钥存在同目录的 `<video_id>.mp4.key`；`/src` 服务时按 `Range` 在内存解密，磁盘上
+不出现明文视频。加密缓存缺少 sidecar key 时返回 `503`（提示重新解析来源），不会把密文
+当成功响应发出去。带 `?mode=stream` 则只返回 CDN 地址与 `key_hex`，服务端不落地。
+漫画没有透传模式，图片一律解密后以 `/src/img_{sha256}.{ext}` 提供。
 
 ---
 
@@ -60,7 +62,7 @@
 | GET | `/api/v1/search` | `query` 或 `q` | `offset` `passback` `count` `tab_type`(1) `search_type` | 综合搜索。`tab_type`：综合 1 / 小说 3 / 短剧 11 / 漫画 8 / 听书 2 |
 | GET | `/api/v1/search/fanqie` | `query` | `offset` | 换用番茄另一条搜索上游 |
 | GET | `/api/v1/search/suggest` | — | — | **未实现**：路由存在但没有注册 handler，返回 `404 unsupported api type` |
-| GET | `/api/v1/search/hot` | — | `offset` `scene`(10) | 热搜榜 |
+| GET | `/api/v1/search/hot` | — | `show_type`(472) | 热搜榜（官方 472 榜单） |
 | GET | `/api/v1/search/cue` | — | `cue_type` `tab_type` `tab_name` | 搜索框轮播提示 |
 | GET | `/api/v1/category` | — | `category_tab`(1) | 分类首页（1 男频 / 2 女频） |
 
@@ -96,6 +98,7 @@
 | GET | `/api/v1/chapters/{item_id}/paragraphs/{n}/reviews` | — | `count` `offset` | 第 n 段段评 |
 | GET | `/api/v1/chapters/{item_id}/paragraphs/{n}/short-reviews` | — | 同上 | 段评（短） |
 | GET | `/api/v1/chapters/{item_id}/timeline` | — | — | 听书字幕时间轴 |
+| GET | `/api/v1/chapters/{item_id}/timepoints` | `book_id` | `tone_id` `req_type`(3) | 听书与正文的同步映射：音频毫秒 → 段落/字符偏移 |
 
 正文有三条解密链，服务端自动选：`chapters/{id}` → 失败回落 `chapters/full` → 图文走
 `chapters/{id}/novel`。调用方不需要关心，但要知道 `full` 更慢（要握手）。

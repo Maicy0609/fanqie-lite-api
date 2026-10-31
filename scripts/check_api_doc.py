@@ -68,11 +68,11 @@ SECTION_MODULES = {
     "首页与推荐": ["home.rs", "video.rs"],
     "搜索与分类": ["search.rs"],
     "书籍": ["book.rs", "comments.rs"],
-    "正文": ["content.rs", "full.rs", "dhcontent.rs", "toutiao.rs", "audio.rs", "comments.rs"],
+    "正文": ["content.rs", "full.rs", "dhcontent.rs", "toutiao.rs", "audio.rs", "audio_text.rs", "comments.rs"],
     "短剧": ["video.rs", "book.rs", "comments.rs"],
     "评论": ["comments.rs"],
     "漫画": ["manga.rs", "video.rs"],
-    "听书": ["audio.rs"],
+    "听书": ["audio.rs", "wkcontent.rs"],
     "作者与榜单": ["author.rs"],
     "其它": ["book.rs", "toutiao.rs"],
     "账号采集（默认不对外推荐）": ["account_library.rs", "account_history.rs"],
@@ -168,7 +168,7 @@ def registered_apis(directory: Path) -> Dict[str, str]:
     """api name -> module file name."""
     found: Dict[str, str] = {}
     for path in directory.glob("*.rs"):
-        for api in re.findall(r'add_route\("([a-z_0-9]+)"', path.read_text(encoding="utf-8")):
+        for api in re.findall(r'add_route\(\s*"([a-z_0-9]+)"', path.read_text(encoding="utf-8")):
             found[api] = path.name
     return found
 
@@ -193,6 +193,11 @@ def module_required(path: Path, params: Set[str]) -> Set[str]:
     """
     text = path.read_text(encoding="utf-8")
     messages = re.findall(r'"([^"]*(?:缺少|missing|请提供|不能为空)[^"]*)"', text)
+    # Only a message that talks about a *parameter* declares one as required.
+    # Data-level prose ("cached video key missing", "book detail content
+    # missing") can name a query parameter by coincidence and must not turn it
+    # into a documented requirement.
+    messages = [message for message in messages if "参数" in message or "parameter" in message]
     required: Set[str] = set()
     for message in messages:
         required.update(

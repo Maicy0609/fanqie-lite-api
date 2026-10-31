@@ -69,11 +69,12 @@ data/
 | 路径 | 行为 | 适用 |
 |---|---|---|
 | `GET /api/v1/videos/{id}?mode=stream` | 返回 CDN 地址 + `key_hex`，**服务端不落地** | 客户端能自己解 CENC（原生 App） |
-| `GET /api/v1/videos/{id}` | 服务端下载、解密、缓存，返回 `/src/{id}.mp4` | 客户端不想管解密；支持离线 |
+| `GET /api/v1/videos/{id}` | 服务端下载、**密文缓存**，返回 `/src/{id}.mp4`（`/src` 按 Range 在内存解密） | 客户端不想管解密；支持离线；盘上不存明文视频 |
 | `GET /api/v1/manga/{id}` | 服务端解密每张图，返回 `/src/img_{sha256}.jpg` | 漫画没有透传模式，图片是 AES-GCM 加密 |
 
 缓存统一放在 `<data-dir>/src`，预算 512 MiB，超出按最久未用淘汰（`.part` 下载中的文件
-不参与统计）。`/src/*` 支持 `Range`，可以直接喂给 `<video>` 或播放器。
+不参与统计）。视频以 CENC 密文落盘，内容密钥放在同名的 `<id>.mp4.key` sidecar；`/src/*`
+按 `Range` 在内存解密后返回，磁盘上不会出现明文视频。`/src/*` 支持 `Range`，可以直接喂给 `<video>` 或播放器。
 
 ```bash
 # 浏览器/标签发不了 header，媒体路径接受 query 形式的凭证
@@ -205,7 +206,7 @@ api.media_url("/src/img_abc.jpg")   # 自动带上 ?token=
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                      # 240 passed
+cargo test --workspace                      # 250 passed
 python scripts/check_api_doc.py             # docs/API.md 与源码一致
 python clients/python/e2e.py                # 真二进制 + 模拟上游 + 客户端
 ```
@@ -221,8 +222,11 @@ CI（`.github/workflows/ci.yml`）跑五道门槛：fmt+clippy、cargo test、�
 
 ## 部署前必须知道
 
-- 默认的视频路径会**在服务端缓存解密后的整集**（`<data-dir>/src`，512 MiB 上限）。
-  如果不想让服务端持有明文内容，让客户端改用 `?mode=stream`。
+- 默认的视频路径会**在服务端缓存整集，但保持 CENC 密文落盘**（`<data-dir>/src`，512 MiB
+  上限；密钥在同名 `.key` sidecar）。`/src` 服务时按 `Range` 在内存解密，磁盘上不出现
+  明文视频。若客户端自己能解 CENC，仍可用 `?mode=stream` 让服务端完全不落地。
+- 旧版本留下的明文视频缓存会在升级后首次启动时清理（`.cachefmt-v2` 标记），这些缓存需要
+  客户端重新请求 `/api/v1/videos/{id}` 生成。
 - **单实例设计。** 多实例会各自注册设备，上游看到 N 倍注册量，更容易触发风控。
 - 池里 5–20 个身份共享同一个出口 IP，比单设备更容易被风控识别。适合个人或小团队。
 - **上游随时可能改协议或轮换签名密钥**，届时只能更新本项目。失效时要改的常量清单在

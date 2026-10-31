@@ -465,6 +465,62 @@ async fn an_unsatisfiable_range_returns_416() {
     assert_eq!(header(&response, "content-range"), "bytes */10");
 }
 
+/// The CENC fixture shared with the core tests: encrypted bytes, the content
+/// key, the independently produced plaintext samples and the mdat offset.
+fn cenc_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>, usize) {
+    use base64::Engine;
+    let raw = include_str!("../../fqapi-core/testdata/cenc_sample_fixture.json");
+    let f: Value = serde_json::from_str(raw).expect("fixture json");
+    let c = &f["cenc"];
+    let decode = |v: &Value| {
+        base64::engine::general_purpose::STANDARD
+            .decode(v.as_str().expect("b64 field"))
+            .expect("decode fixture")
+    };
+    let encrypted = decode(&c["full_sample_b64"]);
+    let key = hex::decode(c["key_hex"].as_str().expect("key hex")).expect("key");
+    let mut plain = Vec::new();
+    for sample in c["full_sample_plain_b64"].as_array().expect("samples") {
+        plain.extend(decode(sample));
+    }
+    let mdat = c["full_mdat_offset"].as_u64().expect("mdat offset") as usize;
+    (encrypted, key, plain, mdat)
+}
+
+#[tokio::test]
+async fn encrypted_cached_video_is_served_decrypted_over_http() {
+    let h = start("secret", false, 5).await;
+    let (encrypted, key, plain, mdat) = cenc_fixture();
+    h.media("vid.mp4", &encrypted);
+    h.media("vid.mp4.key", hex::encode(&key).as_bytes());
+
+    let range = format!("bytes={}-{}", mdat, encrypted.len() - 1);
+    let response = client()
+        .get(h.url("/src/vid.mp4"))
+        .bearer_auth("secret")
+        .header("range", &range)
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.bytes().await.expect("body").as_ref(), plain);
+}
+
+#[tokio::test]
+async fn encrypted_cached_video_without_a_key_is_not_served_as_ciphertext() {
+    let h = start("secret", false, 5).await;
+    let (encrypted, _, _, _) = cenc_fixture();
+    h.media("vid.mp4", &encrypted);
+
+    let response = client()
+        .get(h.url("/src/vid.mp4"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(response.status(), 503);
+}
+
 #[tokio::test]
 async fn the_admin_page_is_served_and_its_api_needs_a_login() {
     let h = start("secret", false, 5).await;

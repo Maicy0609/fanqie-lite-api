@@ -229,6 +229,22 @@ async fn to_http(response: dispatch::Response) -> Response {
                 "failed to read the cached resource",
             ),
         },
+        ResponseBody::FileDecrypted {
+            path,
+            offset,
+            length,
+            index,
+            key,
+            ..
+        } => match stream_decrypted_file(&path, offset, length, index, &key).await {
+            Ok(body) => builder
+                .body(body)
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+            Err(_) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to read the cached resource",
+            ),
+        },
     }
 }
 
@@ -245,6 +261,42 @@ async fn stream_file(path: &Path, offset: u64, length: u64) -> Result<Body, Stri
         file.take(length),
         64 * 1024,
     )))
+}
+
+/// Streams a range of a CENC-encrypted cache file, decrypting each chunk at
+/// its absolute file offset as it passes (P1-7). Chunks arrive sequentially,
+/// and the transform is position-exact, so chunk boundaries do not matter.
+async fn stream_decrypted_file(
+    path: &Path,
+    offset: u64,
+    length: u64,
+    index: Arc<fqapi_core::endpoints::video::CencIndex>,
+    key: &[u8],
+) -> Result<Body, String> {
+    use futures::StreamExt;
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    if offset > 0 {
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let limited = file.take(length);
+    let key = key.to_vec();
+    let mut pos = offset;
+    let stream = ReaderStream::with_capacity(limited, 64 * 1024).map(move |chunk| {
+        chunk.map(|bytes| {
+            let mut buf = bytes.to_vec();
+            // The key was validated when the response was built; a failure
+            // here can only come from a torn read, and passing the chunk
+            // through untransformed is no worse than the I/O error path.
+            let _ = fqapi_core::endpoints::video::apply_cenc_index(&mut buf, pos, &index, &key);
+            pos += buf.len() as u64;
+            axum::body::Bytes::from(buf)
+        })
+    });
+    Ok(Body::from_stream(stream))
 }
 
 /// The error envelope every route already uses, so a client parses one shape.

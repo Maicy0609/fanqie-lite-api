@@ -27,6 +27,14 @@ fqapp/rust/testdata/     →  crates/fqapi-core/testdata/   (逐字节一致)
 fqapp/rust/Cargo.toml    →  crates/fqapi-core/Cargo.toml  (已裁剪，见 §3)
 ```
 
+### 1.1 增量同步
+
+`v0.1.0` 之后的上游提交按风险分批搬运，当前进度：
+
+| 日期 | 上游范围 | 已搬 | 未搬 |
+|---|---|---|---|
+| 2026-10-31 | `4eaeac3..07cfb22` | 热搜 472 榜单（`de304f7`/`1bdc189`）、听书 `audio_timepoint`（`35722c1`/`2a5f41d`/`32ef94b`）、短剧 `vertical`（`6f21915`）、P1-7 密文缓存（`76aa333`） | rustls 补丁（`27adbde`）、`native/` 播放端 atempo（不适用于 HTTP 后端） |
+
 ## 2. 同步方式
 
 上游没有提供可用的 crate 依赖（`publish = false`），因此采用**源码复制 + 差异登记**，
@@ -79,6 +87,7 @@ Phase 0 的目标是"骨架，不改行为"。因此偏离只有"删掉不存在
 | 2 | `src/server.rs` | 新增 `ListenMode::Disabled` 变体；`serve()` 对该变体返回错误（正常路径不会到达） | 无 |
 | 2 | `src/device/mod.rs` | 新增 `pub async fn persist()`（3 行）：显式触发一次 `save`，用于密钥刚就绪时立刻把明文池迁移成加密 | 无（只是把 `save` 暴露出来） |
 | 6 | `src/device/mod.rs` | 新增 `pub async fn devices()`（5 行）：返回池内设备的副本，供管理页展示 | 无（只读拷贝，`secret_key` 由调用方脱敏） |
+| 增量 | `src/endpoints/video.rs` | `apply_cenc_index` 由 `pub(crate)` 改为 `pub` | 无（同一实现；上游只在同 crate 的 `server.rs` 里调用，本项目的 `fqapi-server` 需要跨 crate 流式解密） |
 | 0 | `src/core_log.rs` | 删 `android_logger` 分支：`LOGCAT_TAG` 常量、`CoreLogger.android` 字段、`new()` 中的初始化、`log()` 中的镜像、`flush()` 中的转发；文档注释同步 | **有**：不再镜像到 logcat（服务端没有 logcat） |
 | 4 | `src/core_log.rs` | `log()` 写完文件后把同一行 `println!` 到 stdout（3 行） | **有**：容器只采集 stdout，否则 `docker logs` 里看不到任何核心诊断 |
 | 0 | `Cargo.toml` | 删 `flutter_rust_bridge`、`android_logger`、`[build-dependencies] cc`、`[target.'cfg(windows)'.dependencies] reqwest/blocking`；`crate-type` 改为 `["rlib"]` | 无 |
