@@ -75,6 +75,10 @@ SECTION_MODULES = {
     "听书": ["audio.rs", "wkcontent.rs"],
     "作者与榜单": ["author.rs"],
     "其它": ["book.rs", "toutiao.rs"],
+    "书旗": [
+        "shuqi/common.rs", "shuqi/search.rs", "shuqi/book.rs",
+        "shuqi/toc.rs", "shuqi/content.rs",
+    ],
     "账号采集（默认不对外推荐）": ["account_library.rs", "account_history.rs"],
 }
 
@@ -161,15 +165,26 @@ def router_segments(text: str) -> Set[str]:
 
 
 def routed_apis(text: str) -> Set[str]:
-    return set(re.findall(r'api:\s*"([a-z_0-9]+)"', text))
+    found = set(re.findall(r'api:\s*"([a-z_0-9]+)"', text))
+    # Endpoint groups whose api name is computed in a match arm (`"search" =>
+    # "shuqi_search"`) have no `api: "..."` literal; without this the checker
+    # would not notice that the router points at apis nobody adds via add_route().
+    # (A missing `shuqi::register(s)` in register_all is a different fault: the
+    # live --base-url probe catches it, this offline comparison does not.)
+    found |= set(re.findall(r'=>\s*"([a-z_0-9]+)"', text))
+    return found
 
 
 def registered_apis(directory: Path) -> Dict[str, str]:
-    """api name -> module file name."""
+    """api name -> module file name.
+
+    Endpoint groups may keep their `add_route` calls in a subdirectory's mod.rs
+    (`endpoints/shuqi/mod.rs`), so the scan has to recurse.
+    """
     found: Dict[str, str] = {}
-    for path in directory.glob("*.rs"):
+    for path in directory.rglob("*.rs"):
         for api in re.findall(r'add_route\(\s*"([a-z_0-9]+)"', path.read_text(encoding="utf-8")):
-            found[api] = path.name
+            found[api] = path.relative_to(directory).as_posix()
     return found
 
 
@@ -177,6 +192,10 @@ def module_params(path: Path) -> Set[str]:
     """Query params plus request-body fields a module reads."""
     text = path.read_text(encoding="utf-8")
     params = set(re.findall(r'get_str\("([a-z_0-9]+)"\)', text))
+    # Shuqi routes read aliased params through `pick(params, &[...])` instead of
+    # one `get_str` per name, so the literals live in an array. Scan those too.
+    for array in re.findall(r"pick\(\s*params\s*,\s*&\[(.*?)\]", text, re.S):
+        params |= set(re.findall(r'"([A-Za-z_][A-Za-z0-9_]*)"', array))
     # Account capture takes its input as a JSON body deserialised into a struct.
     body = re.search(r"struct CaptureRequest\s*\{(.*?)\n\}", text, re.S)
     if body:

@@ -1,6 +1,6 @@
 # API 参考
 
-服务端把番茄小说 / 短剧 / 漫画 / 听书的上游接口包装成 47 个端点、58 条路径。
+服务端把番茄小说 / 短剧 / 漫画 / 听书 / 书旗的上游接口包装成 51 个端点、62 条路径。
 **响应是上游 JSON 原样透传**——字段名、层级、`code` 字段都不改写，服务端只做三件事：
 注入签名、解密正文、把媒体落盘成 `/src/...`。
 
@@ -166,6 +166,23 @@
 | GET | `/api/v1/items/{item_ids}` | — | — | 章节信息（不含正文） |
 | GET | `/api/v1/articles/{item_ids}` | — | — | **未实现**：路由存在但没有注册 handler，返回 `404 unsupported api type` |
 | GET | `/api/v1/forum-id` | `author_user_id` `book_id` `item_id` | — | 圈子 id |
+
+## 书旗
+
+书旗是独立于番茄的数据源，走自己的加密网关（keystream + MD5 签名 + `x-sq-public`），
+**不使用番茄设备签名，也不消耗设备池身份**。响应结构与番茄不同，客户端按
+`"source": "shuqi"` 区分。参数一律走 query。
+
+| 方法 | 路径 | 必填 | 常用可选 | 说明 |
+|---|---|---|---|---|
+| GET | `/api/v1/shuqi/search` | `key` | `query` `q` `keyword` | 搜索。`key` 为空时依次回落到 `query` / `q` / `keyword`；上游返回无书节点时给空数组，不报错 |
+| GET | `/api/v1/shuqi/book` | `book_id` | `bookId` `bid` `url` | 书籍详情 |
+| GET | `/api/v1/shuqi/toc` | `book_id` | `bookId` `bid` `url` | 目录。优先 H5 全量页（保留 VIP 标记），失败才用 chapterinfo 递推 |
+| GET | `/api/v1/shuqi/chapter` | `book_id` `chapter_id` | `chapterId` `cid` `url` | 正文。先试免签 CDN，失败才走加密口；整条回退链 15 秒预算 |
+
+`book_id` / `chapter_id` 的别名与内部地址等价：`url` 可以是 `/sqbook/34078`、
+`/sqtoc/34078` 或 `/sqch/<bookId>/<chapterId>`，也可以是带 `?bookId=` 的链接。
+付费章节不做拦截，`utype` 保持 `pre_vip`。
 
 ## 账号采集（默认不对外推荐）
 

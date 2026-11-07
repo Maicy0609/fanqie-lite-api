@@ -12,8 +12,8 @@
 | 项 | 值 |
 |---|---|
 | 仓库 | https://github.com/ch6vip/fqapp |
-| 分支 / commit | `master` @ `5b536cf` |
-| 提交总数 | 864 |
+| 分支 / commit | `origin/master` @ `4c7bc6d`（2026-11-06） |
+| 提交总数 | 947 |
 | 上游路径 | `rust/` |
 | 许可证 | GPL-3.0（`LICENSE` 已原样保留） |
 | 上游版权 | Copyright (C) 2026 ch6vip |
@@ -34,7 +34,8 @@ fqapp/rust/Cargo.toml    →  crates/fqapi-core/Cargo.toml  (已裁剪，见 §3
 | 日期 | 上游范围 | 已搬 | 未搬 |
 |---|---|---|---|
 | 2026-10-31 | `4eaeac3..07cfb22` | 热搜 472 榜单（`de304f7`/`1bdc189`）、听书 `audio_timepoint`（`35722c1`/`2a5f41d`/`32ef94b`）、短剧 `vertical`（`6f21915`）、P1-7 密文缓存（`76aa333`） | rustls 补丁（`27adbde`）、`native/` 播放端 atempo（不适用于 HTTP 后端） |
-| 2026-11-07 | `07cfb22..5b536cf` | 见下方 §1.2，共 15 个提交 | `77d615e`（loopback 转发 account POST body）、`33c1c90`/`4a10578`/`8987974`/`6a285c5`（测试拆分）、`e37bebd`+`f0a34e0`+`2934fd3`（书旗源）、`0bb7497`（`reader_video` 端点）、`86a45e6`+`fea60ca`（漫画回退）、`b1f66c5`/`beaf21b`/`143f719`（桌面播放器） |
+| 2026-11-07 上午 | `07cfb22..5b536cf` | 见下方 §1.2，共 15 个提交 | 当日后续批次已补齐，见 §1.3 |
+| 2026-11-07 下午 | `5b536cf..4c7bc6d` | 测试拆分 4 个、漫画回退 2 个、书旗源 3 个提交，见 §1.3 | `77d615e`（loopback 转发 account POST body）、`0bb7497`（`reader_video` 端点）、`b1f66c5`/`beaf21b`/`143f719`（桌面播放器） |
 
 **口径**：范围按拓扑算（`git log <基线>..origin/master -- rust/`），不按提交时间。
 `07cfb22` 之后有 17 个提交的 author date 早于 2026-10-31 11:41，但它们是 10-31 20:57
@@ -68,6 +69,30 @@ fqapp/rust/Cargo.toml    →  crates/fqapi-core/Cargo.toml  (已裁剪，见 §3
 丢掉 `desktop_media.rs` / `desktop_fetch.rs` / `build.rs` / `Cargo.lock`，
 再用 `git apply -3` 三方合并。上游对象要先 `git fetch` 进本仓库的对象库，
 否则 `-3` 拿不到基线 blob。
+
+### 1.3 第二批（测试拆分 / 漫画回退 / 书旗源）
+
+| 批次 | 提交 | 做法 |
+|---|---|---|
+| 4 | `33c1c90` `4a10578` `8987974` `6a285c5` | **不套补丁**：拆分补丁生成于 `56f0366` 之前，而我们已有 `56f0366`。直接取 `5b536cf` 的 11 个文件（`video.rs` + `video/` 7 个、`device/mod.rs` + `persistence_tests.rs`），再补回 `apply_cenc_index` 与 `persist`/`devices` 两处偏离 |
+| 5c | `86a45e6` `fea60ca` | 顺序成对搬：后者删掉前者加的书籍级图片回退 |
+| 5a | `e37bebd` `f0a34e0`(merge) `2934fd3` | `f0a34e0` 是 `e37bebd` 的合并点，内容重复所以跳过；`2934fd3` 补空搜索结果 |
+
+书旗源落地时，**Rust 侧几乎没有阻力**（19 个新文件、3 处注册、`git apply -3` 全干净），
+真正要做的是本项目自己的配套：
+
+- `scripts/check_api_doc.py` 的 `registered_apis()` 原本只 `glob("*.rs")`，扫不到
+  `endpoints/shuqi/mod.rs` 里的 `add_route`，改成 `rglob`；`module_params()` 增加
+  识别 `pick(params, &[...])` 里的别名参数；`routed_apis()` 增加识别
+  `"search" => "shuqi_search"` 这种计算出来的 api 名（否则"router 指向一个没人
+  `add_route` 的 api"离线检查发现不了）。注意 `register_all` 漏调 `shuqi::register(s)`
+  是另一类故障，离线检查抓不到，由 e2e 的 `--base-url` 活体探测兜底。
+- `docs/API.md` 新增「书旗」节（4 条路由），`SECTION_MODULES` 增加对应模块映射。
+- README 的路由数 46 → 50。
+
+**书旗不消耗设备池身份**：它走 `UpstreamMode::NoSign` → `raw_with_headers` →
+`do_request_capped` → `do_resp`，整条路径不碰 `pool.get()`；设备选取与退役只发生在
+`do_with_device_inner`（`DeviceSigned` 模式）。所以书旗的 401/403 不会把番茄设备退役。
 
 ## 2. 同步方式
 
@@ -130,7 +155,7 @@ Phase 0 的目标是"骨架，不改行为"。因此偏离只有"删掉不存在
 
 ### 3.4 与上游一致的源文件（逐字节一致）
 
-比对基准是**已同步到的上游提交**（当前 `5b536cf`），不是上游 HEAD。`5b536cf` 之后
+比对基准是**已同步到的上游提交**（当前 `origin/master @ 4c7bc6d`）。这个基准之后
 上游仍在演进，那些差异属于"未搬"（见 §1.1），不是本项目的偏离。
 
 基准下逐字节一致：
@@ -139,20 +164,23 @@ Phase 0 的目标是"骨架，不改行为"。因此偏离只有"删掉不存在
 src/config.rs     src/crypto.rs      src/error.rs       src/filter.rs
 src/json.rs       src/static_files.rs  src/timeutil.rs
 src/sign/**       src/upstream/**    src/endpoints/**（video.rs 除外）
-tests/**（static_and_loopback.rs 除外）      testdata/**
+src/device/**（mod.rs 除外）        tests/**（static_and_loopback.rs 除外）
+testdata/**
 ```
 
-与 `5b536cf` 有差异但**不算**本项目偏离的（对应提交未搬）：
+与 `4c7bc6d` 有差异但**不算**本项目偏离的（对应提交未搬）：
 
 | 文件 | 差异来源 |
 |---|---|
 | `src/dispatch.rs`、`src/endpoints/account_history.rs`、`account_library.rs`、`tests/static_and_loopback.rs` | `77d615e` loopback 转发 account POST body |
-| `src/endpoints/mod.rs`、`src/upstream/mod.rs`、`src/endpoints/router.rs` | `e37bebd` 书旗源、`0bb7497` reader_video |
+| `src/endpoints/mod.rs`、`src/endpoints/router.rs` | `0bb7497` reader_video（只差 `pub mod reader_video;` 与一条 `video-match` 分支） |
 
 Phase 0 时 47 个源文件逐字节一致；Phase 2 之后 `server.rs` 与 `device/mod.rs` 各有一处
-小改动，降为 45 个。`07cfb22..5b536cf` 同步完成后，偏离文件仍是
-`lib.rs` / `runtime/mod.rs` / `server.rs` / `device/mod.rs` / `core_log.rs` /
-`endpoints/video.rs` 六个（见 §3.3），`sign/`（约 1,300 行）始终未动。
+小改动，降为 45 个。第 4 批之后 `video.rs`/`device/mod.rs` 的测试都移进了独立文件，
+所以**偏离文件仍是六个**：`lib.rs` / `runtime/mod.rs` / `server.rs` /
+`device/mod.rs` / `core_log.rs` / `endpoints/video.rs`（见 §3.3），
+`sign/`（约 1,300 行）始终未动。`src/endpoints/video/**` 与
+`src/device/persistence_tests.rs` 与上游逐字节一致。
 
 ---
 
@@ -180,7 +208,7 @@ Phase 0 时 47 个源文件逐字节一致；Phase 2 之后 `server.rs` 与 `dev
 ```bash
 cd crates/fqapi-core
 # 基准必须钉在"已同步到的上游提交"，不能用 HEAD —— HEAD 已跑在前面
-UPSTREAM_REF=5b536cf
+UPSTREAM_REF=4c7bc6d
 
 # 测试资产：应输出 19 个文件、无 DIFF
 for f in $(find tests testdata -type f | sort); do
@@ -197,8 +225,8 @@ for f in $(find src -name '*.rs' | sort); do
 done
 ```
 
-跑出来只应剩下 §3.4 表里那几个"因为对应提交未搬"的文件（`dispatch.rs`、
-`account_*.rs`、`endpoints/mod.rs`、`router.rs`、`upstream/mod.rs`、
+跑出来只应剩下 §3.4 表里那 6 个"因为对应提交未搬"的文件（`dispatch.rs`、
+`account_history.rs`、`account_library.rs`、`endpoints/mod.rs`、`router.rs`、
 `tests/static_and_loopback.rs`）。多出来的就是搬错了。
 
 测试分布：
@@ -420,6 +448,32 @@ fqapi-server listening on http://0.0.0.0:18921
 3. **`loopback_guard::lan_mode_refuses…` 曾偶发一次 500**：全量并发跑时出现，
    单独跑与重跑全量均稳定通过；`22f73de` 之后该用例从 6s 降到 0.4s。判为改动前的
    时序抖动，若再次出现需按设备池竞态排查。
+
+### 4.9 第二批同步验证（第 4 / 5c / 5a 批）
+
+执行时间：2026-11-07
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 严格编译 | `cargo check --all-targets` | 通过 |
+| 严格 lint | `CARGO_INCREMENTAL=0 cargo clippy --all-targets -- -D warnings` | 通过，零警告 |
+| 格式 | `cargo fmt --all -- --check` | 通过 |
+| 全量测试 | `cargo test --workspace` | **312 passed / 0 failed**（本轮前 278） |
+| 接口文档契约 | `python scripts/check_api_doc.py` | OK：65 条路径 / 52 个路由段 / 51 个注册 api |
+| 活体书旗测试 | `cargo test -p fqapi_core --test shuqi_live` | 2 个 `#[ignore]`，不打真网 |
+| 逐字节一致性 | §3.4 脚本，基准 `4c7bc6d` | 仅 6 个文件有差异，全部对应未搬提交 |
+
+`clippy -D warnings` 在增量编译开启时会输出一串
+`error deleting lock file for incremental compilation session directory … 拒绝访问 (os error 5)`
+并以 exit 0 结束。这是本机安全策略锁住 `target/debug/incremental` 的告警，不是 lint 诊断
+（`-->` 行数为 0）。用 `CARGO_INCREMENTAL=0` 重跑即可拿到干净输出，本项目脚本已采用。
+
+第 5a 批之后，`scripts/check_api_doc.py` 有三处必要改动，都属于「不改就检查不通过」，
+不是重构：`registered_apis` 改 `rglob`、`module_params` 识别 `pick` 别名数组、
+`routed_apis` 识别计算出的 api 名。最后一项做了负向验证：把 `shuqi/mod.rs` 里 4 个
+`add_route` 临时改名后，离线检查能准确报出 4 条"router references … but no module
+registers it"；还原后检查恢复通过。注意 `register_all` 漏调 `shuqi::register(s)`
+属于另一类故障（`add_route` 还在，离线检查抓不到），由 e2e 的活体探测兜底。
 
 ---
 
