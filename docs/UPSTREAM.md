@@ -12,8 +12,8 @@
 | 项 | 值 |
 |---|---|
 | 仓库 | https://github.com/ch6vip/fqapp |
-| 分支 / commit | `master` @ `4eaeac3` |
-| 提交总数 | 496 |
+| 分支 / commit | `master` @ `5b536cf` |
+| 提交总数 | 864 |
 | 上游路径 | `rust/` |
 | 许可证 | GPL-3.0（`LICENSE` 已原样保留） |
 | 上游版权 | Copyright (C) 2026 ch6vip |
@@ -34,6 +34,40 @@ fqapp/rust/Cargo.toml    →  crates/fqapi-core/Cargo.toml  (已裁剪，见 §3
 | 日期 | 上游范围 | 已搬 | 未搬 |
 |---|---|---|---|
 | 2026-10-31 | `4eaeac3..07cfb22` | 热搜 472 榜单（`de304f7`/`1bdc189`）、听书 `audio_timepoint`（`35722c1`/`2a5f41d`/`32ef94b`）、短剧 `vertical`（`6f21915`）、P1-7 密文缓存（`76aa333`） | rustls 补丁（`27adbde`）、`native/` 播放端 atempo（不适用于 HTTP 后端） |
+| 2026-11-07 | `07cfb22..5b536cf` | 见下方 §1.2，共 15 个提交 | `77d615e`（loopback 转发 account POST body）、`33c1c90`/`4a10578`/`8987974`/`6a285c5`（测试拆分）、`e37bebd`+`f0a34e0`+`2934fd3`（书旗源）、`0bb7497`（`reader_video` 端点）、`86a45e6`+`fea60ca`（漫画回退）、`b1f66c5`/`beaf21b`/`143f719`（桌面播放器） |
+
+**口径**：范围按拓扑算（`git log <基线>..origin/master -- rust/`），不按提交时间。
+`07cfb22` 之后有 17 个提交的 author date 早于 2026-10-31 11:41，但它们是 10-31 20:57
+之后才 merge 进 master 的，按时间筛会漏掉。
+
+### 1.2 `07cfb22..5b536cf` 的搬运顺序
+
+搬运必须按上游拓扑顺序，否则补丁冲突。`677182e` 与 `f3ad756` 是**一对**：
+前者把 `unsigned_get` 改成四个参数，却漏改了下载回退的调用点，只有后者补上才编译。
+
+| # | 提交 | 内容 |
+|---|---|---|
+| 1 | `a88f405` | 删零引用的 `tower` 依赖 |
+| 2 | `384fa11` | 音频播放对瞬时失败重试 |
+| 3 | `677182e` | `unsigned_get` 走限流路径（安全：原先可无界缓冲） |
+| 4 | `f3ad756` | video 缓存 IO 与 prune 移出请求路径 |
+| 5 | `29ba20f` | `reading724` 参数袋收进 `endpoints::base` |
+| 6 | `22f73de` | 有可用设备时不等待池维护 |
+| 7 | `97630f7` | 使用计数持久化按批次去抖 |
+| 8 | `6f897e6` | 429/5xx/传输错误同设备重试，只有 401/403 退役设备 |
+| 9 | `1cc7525` | DH/CM 解密搬进 `spawn_blocking` |
+| 10 | `7a22dad` | account 复用 no-redirect 传输 |
+| 11 | `861ae66` | 漫画章节图分批并行下载 |
+| 12 | `aff581c` | `full` 的 `item_infos` 不再整体 clone |
+| 13 | `e5b1354` | `content` 批量条目原地解密 |
+| 14 | `56f0366` | 新增 `upstream/budget.rs`，统一请求截止时间 |
+| 15 | `5b536cf` | 生命周期栅栏（`CancellationToken` + 499/504） |
+
+搬运脚本的做法（可复用）：从上游仓库取 `git diff <c>^ <c> -- rust/`，把路径
+`rust/` → `crates/fqapi-core/`、`rust/src/api/` → `crates/fqapi-core/src/runtime/`，
+丢掉 `desktop_media.rs` / `desktop_fetch.rs` / `build.rs` / `Cargo.lock`，
+再用 `git apply -3` 三方合并。上游对象要先 `git fetch` 进本仓库的对象库，
+否则 `-3` 拿不到基线 blob。
 
 ## 2. 同步方式
 
@@ -88,23 +122,37 @@ Phase 0 的目标是"骨架，不改行为"。因此偏离只有"删掉不存在
 | 2 | `src/device/mod.rs` | 新增 `pub async fn persist()`（3 行）：显式触发一次 `save`，用于密钥刚就绪时立刻把明文池迁移成加密 | 无（只是把 `save` 暴露出来） |
 | 6 | `src/device/mod.rs` | 新增 `pub async fn devices()`（5 行）：返回池内设备的副本，供管理页展示 | 无（只读拷贝，`secret_key` 由调用方脱敏） |
 | 增量 | `src/endpoints/video.rs` | `apply_cenc_index` 由 `pub(crate)` 改为 `pub` | 无（同一实现；上游只在同 crate 的 `server.rs` 里调用，本项目的 `fqapi-server` 需要跨 crate 流式解密） |
+| 增量 | `src/server.rs` | `handler()` 里的 `use crate::api::{race_dispatch, RaceOutcome}` 改为 `use crate::runtime::…` | 无（§3.2 重命名的连带影响：上游 `5b536cf` 新增的引用要跟着改路径） |
 | 0 | `src/core_log.rs` | 删 `android_logger` 分支：`LOGCAT_TAG` 常量、`CoreLogger.android` 字段、`new()` 中的初始化、`log()` 中的镜像、`flush()` 中的转发；文档注释同步 | **有**：不再镜像到 logcat（服务端没有 logcat） |
 | 4 | `src/core_log.rs` | `log()` 写完文件后把同一行 `println!` 到 stdout（3 行） | **有**：容器只采集 stdout，否则 `docker logs` 里看不到任何核心诊断 |
 | 0 | `Cargo.toml` | 删 `flutter_rust_bridge`、`android_logger`、`[build-dependencies] cc`、`[target.'cfg(windows)'.dependencies] reqwest/blocking`；`crate-type` 改为 `["rlib"]` | 无 |
 | 0 | 根 `Cargo.toml` | 新增 workspace；`[profile.*]` 从成员清单移到根（Cargo 只认根 profile） | 无 |
 
-### 3.4 零改动的文件（逐字节一致）
+### 3.4 与上游一致的源文件（逐字节一致）
+
+比对基准是**已同步到的上游提交**（当前 `5b536cf`），不是上游 HEAD。`5b536cf` 之后
+上游仍在演进，那些差异属于"未搬"（见 §1.1），不是本项目的偏离。
+
+基准下逐字节一致：
 
 ```
-src/config.rs          src/dispatch.rs       src/error.rs
-src/crypto.rs          src/filter.rs         src/json.rs
-src/static_files.rs    src/timeutil.rs
-src/endpoints/**       src/sign/**           src/upstream/**
-tests/**               testdata/**
+src/config.rs     src/crypto.rs      src/error.rs       src/filter.rs
+src/json.rs       src/static_files.rs  src/timeutil.rs
+src/sign/**       src/upstream/**    src/endpoints/**（video.rs 除外）
+tests/**（static_and_loopback.rs 除外）      testdata/**
 ```
+
+与 `5b536cf` 有差异但**不算**本项目偏离的（对应提交未搬）：
+
+| 文件 | 差异来源 |
+|---|---|
+| `src/dispatch.rs`、`src/endpoints/account_history.rs`、`account_library.rs`、`tests/static_and_loopback.rs` | `77d615e` loopback 转发 account POST body |
+| `src/endpoints/mod.rs`、`src/upstream/mod.rs`、`src/endpoints/router.rs` | `e37bebd` 书旗源、`0bb7497` reader_video |
 
 Phase 0 时 47 个源文件逐字节一致；Phase 2 之后 `server.rs` 与 `device/mod.rs` 各有一处
-小改动，降为 45 个。`endpoints/`（约 12,000 行）与 `sign/`（约 1,300 行）始终未动。
+小改动，降为 45 个。`07cfb22..5b536cf` 同步完成后，偏离文件仍是
+`lib.rs` / `runtime/mod.rs` / `server.rs` / `device/mod.rs` / `core_log.rs` /
+`endpoints/video.rs` 六个（见 §3.3），`sign/`（约 1,300 行）始终未动。
 
 ---
 
@@ -131,18 +179,27 @@ Phase 0 时 47 个源文件逐字节一致；Phase 2 之后 `server.rs` 与 `dev
 
 ```bash
 cd crates/fqapi-core
+# 基准必须钉在"已同步到的上游提交"，不能用 HEAD —— HEAD 已跑在前面
+UPSTREAM_REF=5b536cf
+
 # 测试资产：应输出 19 个文件、无 DIFF
 for f in $(find tests testdata -type f | sort); do
-  git -C /path/to/fqapp show "HEAD:rust/$f" | cmp -s - "$f" || echo "DIFF: $f"
+  git -C /path/to/fqapp show "$UPSTREAM_REF:rust/$f" | cmp -s - "$f" || echo "DIFF: $f"
 done
 
-# 未改动源码：应输出 45 个文件、无 DIFF
+# 未改动源码：跳过 §3.3 登记的全部偏离文件
 for f in $(find src -name '*.rs' | sort); do
   rel=${f#src/}
-  case "$rel" in runtime/mod.rs|core_log.rs|lib.rs|server.rs|device/mod.rs) continue;; esac
-  git -C /path/to/fqapp show "HEAD:rust/src/$rel" | cmp -s - "$f" || echo "DIFF: $rel"
+  case "$rel" in
+    runtime/mod.rs|core_log.rs|lib.rs|server.rs|device/mod.rs|endpoints/video.rs) continue;;
+  esac
+  git -C /path/to/fqapp show "$UPSTREAM_REF:rust/src/$rel" | cmp -s - "$f" || echo "DIFF: $rel"
 done
 ```
+
+跑出来只应剩下 §3.4 表里那几个"因为对应提交未搬"的文件（`dispatch.rs`、
+`account_*.rs`、`endpoints/mod.rs`、`router.rs`、`upstream/mod.rs`、
+`tests/static_and_loopback.rs`）。多出来的就是搬错了。
 
 测试分布：
 
@@ -343,6 +400,27 @@ fqapi-server listening on http://0.0.0.0:18921
 4. **`/admin/*` 的请求写日志但不进历史**——页面每 5 秒轮询一次状态，否则会把操作员
    真正想看的 API 流量冲掉。
 
+### 4.8 增量同步验证（`07cfb22..5b536cf`）
+
+执行时间：2026-11-07
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 严格编译 | `cargo check --all-targets` | 通过 |
+| 严格 lint | `cargo clippy --all-targets -- -D warnings` | 通过 |
+| 全量测试 | `cargo test --workspace` | **278 passed / 0 failed**（同步前 225） |
+| 逐字节一致性 | §3.4 的脚本，基准换成 `5b536cf` | 仅 §3.3 / §3.4 列出的文件有差异 |
+
+三处需要记住的坑：
+
+1. **`677182e` 单独不编译**：它把 `unsigned_get` 改成四个参数，却漏改下载回退的调用点，
+   由紧随其后的 `f3ad756` 补上。两个提交必须成对搬。
+2. **`server.rs` 里的 `crate::api::`**：上游 `5b536cf` 在 `handler()` 新增
+   `use crate::api::{race_dispatch, RaceOutcome}`，本项目是 `runtime`，搬完必须改路径。
+3. **`loopback_guard::lan_mode_refuses…` 曾偶发一次 500**：全量并发跑时出现，
+   单独跑与重跑全量均稳定通过；`22f73de` 之后该用例从 6s 降到 0.4s。判为改动前的
+   时序抖动，若再次出现需按设备池竞态排查。
+
 ---
 
 ## 5. 待办偏离（Phase 6 及以后）
@@ -391,7 +469,8 @@ header），并给媒体响应加 `Referrer-Policy: no-referrer` 与 `Cache-Cont
 
 **明确不做**（登记为技术债，不在移植期清理）：
 
-- `reading724_params` 的四份拷贝（`home.rs` / `comments.rs` / `audio.rs` / `book.rs`）
+- ~~`reading724_params` 的四份拷贝（`home.rs` / `comments.rs` / `audio.rs` / `book.rs`）~~
+  —— 已由上游 `29ba20f` 收进 `endpoints::base`，随 2026-11-07 同步消除
 - `HOST_FQNOVEL` 与 `HOST_FQNOVELB` 值相同
 - `config.admin` 字段从未被使用
 - `filter.rs` 的空壳实现（`enabled=true` 即启动失败）
