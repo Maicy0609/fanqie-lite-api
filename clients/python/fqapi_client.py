@@ -138,8 +138,8 @@ class FqapiClient:
 
     def video(self, video_id: str, stream: bool = True) -> Dict[str, Any]:
         """`stream=True` asks for the CDN URL plus `key_hex` and keeps nothing
-        on the server; `stream=False` makes the server cache the decrypted
-        episode under `/src/`."""
+        on the server; `stream=False` makes the server cache the episode as
+        CENC ciphertext under `/src/` and decrypt it per Range when served."""
         params = {"mode": "stream"} if stream else {}
         return self.request(f"/api/v1/videos/{video_id}", **params)
 

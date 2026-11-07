@@ -150,7 +150,7 @@ scripts/smoke.sh fqapi-lite-api:local
 crates/fqapi-core/     # 从 fqapp/rust 移植的核心（业务代码 95% 原样）
   src/runtime/         # 进程级状态：init / shutdown / 取消 / 超时
   src/dispatch.rs      # 唯一分发器（Request -> Response，HTTP 形状）
-  src/endpoints/       # 50 条 /api/v1/* 路由与业务 handler（含书旗 4 条）
+  src/endpoints/       # 51 条 /api/v1/* 路由与业务 handler（含书旗 4 条）
   src/sign/            # x-argus / x-ladon / x-gorgon / simon / sm3
   src/device/          # 设备池 + 四步注册 + 池文件加密
   src/upstream/        # 带签名的 HTTP、设备轮换、CM/DH 握手
@@ -172,7 +172,7 @@ deploy/                # docker-compose 示例
 .github/workflows/     # CI：fmt+clippy / test / 文档契约 / e2e / 镜像
 docs/
   CODING.md              # 实现原则
-  API.md                 # 46 个端点、57 条路径的接口手册
+  API.md                 # 51 个端点、65 条路径的接口手册
   backend-analysis.md    # 上游后端逻辑分析
   PORTING-ANALYSIS.md    # 移植方案、接口设计、阶段计划
   CLIENT-MIGRATION.md    # 前端怎么从 FFI 换成 HTTP（方案与工作量）
@@ -206,7 +206,7 @@ api.media_url("/src/img_abc.jpg")   # 自动带上 ?token=
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                      # 312 passed
+cargo test --workspace                      # 313 passed（2 ignored）
 python scripts/check_api_doc.py             # docs/API.md 与源码一致
 python clients/python/e2e.py                # 真二进制 + 模拟上游 + 客户端
 ```

@@ -1,6 +1,6 @@
 # API 参考
 
-服务端把番茄小说 / 短剧 / 漫画 / 听书 / 书旗的上游接口包装成 51 个端点、62 条路径。
+服务端把番茄小说 / 短剧 / 漫画 / 听书 / 书旗的上游接口包装成 51 个端点、65 条路径。
 **响应是上游 JSON 原样透传**——字段名、层级、`code` 字段都不改写，服务端只做三件事：
 注入签名、解密正文、把媒体落盘成 `/src/...`。
 
@@ -109,7 +109,7 @@
 |---|---|---|---|---|
 | GET | `/api/v1/videos/{video_id}` | — | `mode` | 播放源。`mode=stream` 返回 `{video_url, key_hex, variants[]}` |
 | GET | `/api/v1/videos/{video_id}/detail` | — | — | 剧集详情 |
-| GET | `/api/v1/videos/{video_id}/danmaku` | — | — | 弹幕 |
+| GET | `/api/v1/videos/{video_id}/danmaku` | `series_id` | `start_offset_time` `playlet_item_duration` `cursor` | 弹幕。`vid` 作 `group_id`，`series_id` 作 `book_id`；`playlet_item_duration` 单位是秒 |
 | POST | `/api/v1/videos/{video_id}/danmaku/add` | `text` `series_id` | — | 发弹幕（写，需令牌） |
 | GET | `/api/v1/series/{series_id}` | — | — | 剧集详情（series 形式，与 `videos/{id}/detail` 同一上游） |
 | GET | `/api/v1/series/{series_id}/comments` | — | `count` `offset` | 剧评 |
@@ -125,9 +125,9 @@
 
 | 方法 | 路径 | 必填 | 常用可选 | 说明 |
 |---|---|---|---|---|
-| GET | `/api/v1/comments/{comment_id}/replies` | — | `count` `offset` | 回复列表 |
+| GET | `/api/v1/comments/{comment_id}/replies` | `group_id` `book_id` | `count` | 回复列表。`group_id` / `book_id` 用于定位评论容器 |
 | POST | `/api/v1/comments/{comment_id}/digg` | — | `series_id` | 点赞（写，需令牌） |
-| POST | `/api/v1/comments/{comment_id}/reply` | `text` `reply_to_comment_id` | `series_id` `group_id` `book_id` | 回复（写，需令牌） |
+| POST | `/api/v1/comments/{comment_id}/reply` | `text` `series_id` `reply_to_comment_id` | `reply_to_reply_id` `reply_to_user_id` | 回复（写，需令牌） |
 | GET | `/api/v1/comments/short-url` | `target` | — | 分享短链解析 |
 
 三条 POST 路由是**设备绑定写路由**：它们以本机的设备身份提交动作，所以即使开了
@@ -189,7 +189,7 @@
 | 方法 | 路径 | 必填 | 说明 |
 |---|---|---|---|
 | POST | `/api/v1/account/fanqie/library` | body: `cookie` `resource` | 读用户番茄书架。9 个固定只读 RPC，URL/方法/路径全部白名单 |
-| POST | `/api/v1/account/fanqie/history` | body: `cookie` `resource` | 读阅读历史 |
+| POST | `/api/v1/account/fanqie/history` | body: `cookie` `offset` `last_min_read_timestamp_ms` `is_first_load` | 读阅读历史。可选 `device_id`；本端点不接受 `resource` |
 
 凭证只允许出现在 **POST body**（≤16 KiB），不会进 URL、日志或设备池；请求不跟随重定向。
 这两个端点转发的是用户自己的账号 Cookie，务必只在自己掌控的部署里开放。

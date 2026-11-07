@@ -50,6 +50,27 @@ ENDPOINTS = ROOT / "crates" / "fqapi-core" / "src" / "endpoints"
 # until the document is updated.
 KNOWN_UNIMPLEMENTED = {"search_predict", "toutiao_article"}
 
+# Routes whose handler requires query/body parameters that `router.rs` does
+# not inject. The section-level union below cannot catch these: names such as
+# `group_id` / `book_id` / `series_id` are legitimate elsewhere, so a missing
+# per-route requirement would otherwise pass. Keep this list in sync with the
+# handlers' `BadRequest` checks (and `HistoryRequest`'s required fields).
+ROUTE_REQUIRED = {
+    ("GET", "/api/v1/comments/{comment_id}/replies"): {"group_id", "book_id"},
+    ("POST", "/api/v1/comments/{comment_id}/reply"): {
+        "text",
+        "series_id",
+        "reply_to_comment_id",
+    },
+    ("GET", "/api/v1/videos/{video_id}/danmaku"): {"series_id"},
+    ("POST", "/api/v1/account/fanqie/history"): {
+        "cookie",
+        "offset",
+        "last_min_read_timestamp_ms",
+        "is_first_load",
+    },
+}
+
 # Params the router injects from the path before the handler runs. They never
 # appear in a handler's `get_str` calls.
 ROUTER_INJECTED = {
@@ -196,8 +217,12 @@ def module_params(path: Path) -> Set[str]:
     # one `get_str` per name, so the literals live in an array. Scan those too.
     for array in re.findall(r"pick\(\s*params\s*,\s*&\[(.*?)\]", text, re.S):
         params |= set(re.findall(r'"([A-Za-z_][A-Za-z0-9_]*)"', array))
-    # Account capture takes its input as a JSON body deserialised into a struct.
-    body = re.search(r"struct CaptureRequest\s*\{(.*?)\n\}", text, re.S)
+    # Account capture takes its input as a JSON body deserialised into a
+    # request struct. There are two today (`CaptureRequest` for the library
+    # RPCs, `HistoryRequest` for the dedicated history route); scan either by
+    # its `...Request` name so a new body field is checked without editing the
+    # checker.
+    body = re.search(r"struct\s+\w*Request\s*\{(.*?)\n\}", text, re.S)
     if body:
         params |= set(re.findall(r"^\s*([a-z_][a-z0-9_]*)\s*:", body.group(1), re.M))
     return params
@@ -270,6 +295,22 @@ def main() -> int:
     }
 
     problems: List[str] = []
+
+    # 0. Routes with handler-required parameters the router cannot inject must
+    #    document them as required. This is the per-route check the section
+    #    union in step 4/5 deliberately cannot make.
+    routes_by_key = {(route.method, route.path): route for route in routes}
+    for key, expected in ROUTE_REQUIRED.items():
+        route = routes_by_key.get(key)
+        if route is None:
+            problems.append(f"{key[0]} {key[1]}: route is not documented")
+            continue
+        missing = expected - route.required
+        if missing:
+            problems.append(
+                f"{key[0]} {key[1]}: missing required parameter(s) "
+                f"{', '.join(sorted(missing))}"
+            )
 
     # 1. Every segment the document uses must exist in the router.
     for segment in sorted(documented_segments - known_segments):
