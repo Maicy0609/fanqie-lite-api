@@ -1,6 +1,6 @@
 # API 参考
 
-服务端把番茄小说 / 短剧 / 漫画 / 听书 / 书旗的上游接口包装成 51 个端点、65 条路径。
+服务端把番茄小说 / 短剧 / 漫画 / 听书 / 书旗的上游接口包装成 53 个端点、67 条路径。
 **响应是上游 JSON 原样透传**——字段名、层级、`code` 字段都不改写，服务端只做三件事：
 注入签名、解密正文、把媒体落盘成 `/src/...`。
 
@@ -53,6 +53,7 @@
 | GET | `/api/v1/recommend` | — | 同上 | `homepage` 的别名 |
 | GET | `/api/v1/recommend/channels` | — | `tab_type`(16) `last_tab_type`(-1) | 频道表，`data.tab_item[]` 逐条下发 |
 | GET | `/api/v1/recommend/series-feed` | `cell_id` | `tab_type`(16) `offset` `client_req_type` `client_template` `cell_name` `cell_sub_id` `selected_items` `sub_selected_items` `filter_ids` | 短剧 feed。`cell_id` 来自首页响应 |
+| GET | `/api/v1/recommend/ugc-stories` | — | `offset` `session_id` | 官方短篇故事 feed（`tab_type_new=8`）。`offset` 必须是非负整数，写错直接 400 |
 | GET | `/api/v1/series/{series_id}/related` | `series_id` | — | 相关短剧 |
 
 ## 搜索与分类
@@ -82,6 +83,7 @@
 | GET | `/api/v1/books/{book_id}/comments` | — | `count` `offset` | 段评聚合（legacy） |
 | GET | `/api/v1/books/{book_id}/related` | — | — | 相关推荐 |
 | GET | `/api/v1/books/{book_id}/tones` | — | — | 音色列表 |
+| GET | `/api/v1/books/{book_id}/video-match` | — | — | 阅读器「小说改编短剧」入口：本作是否已有短剧。需要设备签名，走 `reader/video/timepoint` |
 | GET | `/api/v1/books/{book_id}/share` | — | — | 分享信息 |
 | GET | `/api/v1/novels/{post_id}` | — | — | 帖子 / 长书评详情 |
 

@@ -12,11 +12,20 @@
 | 项 | 值 |
 |---|---|
 | 仓库 | https://github.com/ch6vip/fqapp |
-| 分支 / commit | `origin/master` @ `4c7bc6d`（2026-11-06） |
-| 提交总数 | 947 |
+| 分支 / commit | `origin/master` @ `2c53f236`（2026-11-21） |
+| 提交总数 | 1450 |
 | 上游路径 | `rust/` |
 | 许可证 | GPL-3.0（`LICENSE` 已原样保留） |
 | 上游版权 | Copyright (C) 2026 ch6vip |
+
+> **2026-11-21 上游重写了历史。** 旧基线 `4c7bc6d`、`5b536cf` 等哈希已不在
+> `origin/master` 的祖先链上（本地 clone 停在 `4eaeac3`，一度 ahead 242 / behind 1196）。
+> 内容谱系仍然可对齐：`6bfd81d`（2026-11-10，PR #306）的 `rust/` 树与 `4c7bc6d:rust`
+> **同一个 tree 哈希**（`4bbf7f1f`），因此本轮增量以 `6bfd81d` 为内容锚点计算，
+> 即 `git log 6bfd81d..origin/master -- rust/`（28 个非 merge 提交）。
+> 判定一致性时比对**上游仓库内容**（`git rev-parse origin/master:<path>` 与
+> `git hash-object <本地文件>`），不要比对工作树：仓库 `core.autocrlf=true`，
+> `git archive` 会把 `*.json`/`*.dart` 转成 CRLF，造成满屏假差异。
 
 本项目的 `crates/fqapi-core` 与上游 `rust/` 的对应关系：
 
@@ -36,6 +45,7 @@ fqapp/rust/Cargo.toml    →  crates/fqapi-core/Cargo.toml  (已裁剪，见 §3
 | 2026-10-31 | `4eaeac3..07cfb22` | 热搜 472 榜单（`de304f7`/`1bdc189`）、听书 `audio_timepoint`（`35722c1`/`2a5f41d`/`32ef94b`）、短剧 `vertical`（`6f21915`）、P1-7 密文缓存（`76aa333`） | rustls 补丁（`27adbde`）、`native/` 播放端 atempo（不适用于 HTTP 后端） |
 | 2026-11-07 上午 | `07cfb22..5b536cf` | 见下方 §1.2，共 15 个提交 | 当日后续批次已补齐，见 §1.3 |
 | 2026-11-07 下午 | `5b536cf..4c7bc6d` | 测试拆分 4 个、漫画回退 2 个、书旗源 3 个提交，见 §1.3 | `77d615e`（loopback 转发 account POST body）、`0bb7497`（`reader_video` 端点）、`b1f66c5`/`beaf21b`/`143f719`（桌面播放器） |
+| 2026-11-21 | `6bfd81d..2c53f236`（28 个非 merge 提交） | L0/L1/L2：`77d615e` 与 `0bb7497` 补齐、短篇 `ugc-stories`、`MultiGzDecoder`、正文解密错误上抛、设备身份外置（`config.upstream`）+ `registered_version_code` 版本退役、账号传输改走 `account_transport()`，见 §1.4 | **短剧 V5 播放链**（`sign/v5*`、`upstream/playback_*`、`network.rs`、`video.rs`、`base.rs` 及 4 个相关测试）、桌面播放器 `desktop_*`、`frb_generated` |
 
 **口径**：范围按拓扑算（`git log <基线>..origin/master -- rust/`），不按提交时间。
 `07cfb22` 之后有 17 个提交的 author date 早于 2026-10-31 11:41，但它们是 10-31 20:57
@@ -93,6 +103,33 @@ fqapp/rust/Cargo.toml    →  crates/fqapi-core/Cargo.toml  (已裁剪，见 §3
 **书旗不消耗设备池身份**：它走 `UpstreamMode::NoSign` → `raw_with_headers` →
 `do_request_capped` → `do_resp`，整条路径不碰 `pool.get()`；设备选取与退役只发生在
 `do_with_device_inner`（`DeviceSigned` 模式）。所以书旗的 401/403 不会把番茄设备退役。
+
+### 1.4 第三批（2026-11-21，L0/L1/L2）
+
+本轮先搬"低阻力/中阻力"部分，短剧 V5 播放链留到下一批。做法全部是**整文件取上游当前版本**，
+只有 4 个文件因为本项目偏移需要手工合并。
+
+| 组 | 文件 | 内容 |
+|---|---|---|
+| L0 | `crypto.rs`、`endpoints/content.rs` | gzip 改 `MultiGzDecoder`（gzip 是多 member 流）；`chapters/batch` 解密失败由"静默丢字段"改为 `500`，不再把空 content 当成成功 |
+| L1 | `dispatch.rs`、`endpoints/account_history.rs`、`account_library.rs`、`server.rs`、`tests/static_and_loopback.rs` | 补齐 `77d615e`：loopback 只为账号路由保留 body（16 KiB 上限），其余路由仍然流式丢弃 |
+| L1 | `endpoints/reader_video.rs`、`endpoints/mod.rs`、`endpoints/router.rs` | 补齐 `0bb7497`：`GET /api/v1/books/{id}/video-match`（设备签名，`reader/video/timepoint`） |
+| L1 | `endpoints/home.rs`、`endpoints/router.rs` | 新增 `GET /api/v1/recommend/ugc-stories`（官方短篇 feed，`tab_type_new=8`，`NoSign`） |
+| L2 | `config.rs`、`device/register.rs`、`device/pool_crypto.rs` | 注册身份（`version_name` / `version_code` / `manifest_version_code` / `update_version_code` / `user_agent`）从代码移到 `config.json` 的可选 `upstream` 段；缺省段逐字节等于旧常量（65132）。池加密改为 `Zeroizing` + `*_with_key` 变体 |
+| L2 | `device/mod.rs`、`device/persistence_tests.rs` | `Device` 新增 `registered_version_code`；池加载时退役"用别的版本号注册的"设备，**旧池文件里该字段为空表示未知，予以保留**（一次升级不清空设备池） |
+| L2 | `runtime/mod.rs` | `init_core` 在 `Config::load` 之后发布身份：`set_upstream_identity(cfg.upstream.clone())` |
+
+`DevicePool::for_runtime()`（Linux 严格模式：没有 `pool.key` 直接失败）**没有启用**，
+`init_core` 仍用 `DevicePool::new`。本项目的启动顺序已经保证"先 `provision_pool_key`
+再建池、密钥缺失就拒绝启动"，严格模式在这里是同一件事的第二次表达。
+
+**这一批暴露的三个连带点**（下次搬 V5 时会再遇到）：
+
+1. `server.rs` 的 `use crate::api::{...}` 必须改成 `crate::runtime::`（§3.2 的改名连带）。
+2. 新增 `Device` 字段后，`upstream/client.rs` 里测试用的 `Device { .. }` 字面量要补字段；
+   V5 批次搬入上游 `client.rs` 时会被覆盖，届时删除这处小改。
+3. `config.rs` 新增的单测读的是 APK 资产 `../assets/config/config.json`，本项目没有该目录，
+   改指向 `data/config/config.json`（见 §3.3）。
 
 ## 2. 同步方式
 
@@ -152,35 +189,57 @@ Phase 0 的目标是"骨架，不改行为"。因此偏离只有"删掉不存在
 | 4 | `src/core_log.rs` | `log()` 写完文件后把同一行 `println!` 到 stdout（3 行） | **有**：容器只采集 stdout，否则 `docker logs` 里看不到任何核心诊断 |
 | 0 | `Cargo.toml` | 删 `flutter_rust_bridge`、`android_logger`、`[build-dependencies] cc`、`[target.'cfg(windows)'.dependencies] reqwest/blocking`；`crate-type` 改为 `["rlib"]` | 无 |
 | 0 | 根 `Cargo.toml` | 新增 workspace；`[profile.*]` 从成员清单移到根（Cargo 只认根 profile） | 无 |
+| 增量 | `src/config.rs` | `the_shipped_config_json_still_parses` 的路径由 `../assets/config/config.json` 改为 `../../data/config/config.json`，并去掉 `port != 0` 断言（本项目的配置文件把 `port` 留 0，监听地址走 `--listen`） | 无（测试只校验"随仓库发布的配置仍能解析"） |
+| 增量 | `src/upstream/client.rs` | 测试辅助里的 `Device { .. }` 补一行 `registered_version_code: String::new()` | 无（空值＝版本未知，不会被退役；搬 V5 批次时随上游 `client.rs` 一起覆盖） |
 
 ### 3.4 与上游一致的源文件（逐字节一致）
 
-比对基准是**已同步到的上游提交**（当前 `origin/master @ 4c7bc6d`）。这个基准之后
-上游仍在演进，那些差异属于"未搬"（见 §1.1），不是本项目的偏离。
+比对基准是**已同步到的上游提交**（当前 `origin/master @ 2c53f236`，2026-11-21）。
+这个基准之后上游若继续演进，那些差异属于"未搬"，不是本项目的偏离。
 
-基准下逐字节一致：
+判定方法（blob 哈希，不受行尾符影响）：
+
+```bash
+cd crates/fqapi-core
+for p in $(git -C /path/to/fqapp ls-tree -r --name-only origin/master rust/src rust/tests rust/testdata); do
+  rel=${p#rust/}
+  [ "$(git -C /path/to/fqapp rev-parse origin/master:$p)" = "$(git hash-object $rel)" ] || echo "DIFF: $rel"
+done
+```
+
+基准下 84 个文件逐字节一致，其余分成两类。
+
+**A. 本项目的偏离（§3.3 登记，共 8 个文件）**：
 
 ```
-src/config.rs     src/crypto.rs      src/error.rs       src/filter.rs
-src/json.rs       src/static_files.rs  src/timeutil.rs
-src/sign/**       src/upstream/**    src/endpoints/**（video.rs 除外）
-src/device/**（mod.rs 除外）        tests/**（static_and_loopback.rs 除外）
-testdata/**
+src/lib.rs            src/runtime/mod.rs     src/server.rs
+src/device/mod.rs     src/core_log.rs        src/endpoints/video.rs
+src/config.rs         src/upstream/client.rs
 ```
 
-与 `4c7bc6d` 有差异但**不算**本项目偏离的（对应提交未搬）：
+**B. 尚未搬的上游改动（见 §1.1 的"未搬"列，不算偏离）**：
 
 | 文件 | 差异来源 |
 |---|---|
-| `src/dispatch.rs`、`src/endpoints/account_history.rs`、`account_library.rs`、`tests/static_and_loopback.rs` | `77d615e` loopback 转发 account POST body |
-| `src/endpoints/mod.rs`、`src/endpoints/router.rs` | `0bb7497` reader_video（只差 `pub mod reader_video;` 与一条 `video-match` 分支） |
+| `src/endpoints/base.rs`、`video/spade_vectors.rs`、`src/sign/mod.rs`、`src/upstream/{http,mod}.rs`、`tests/{loopback_guard,mock_upstream_contract,upstream_retry,video_codec_gate}.rs` | 短剧 V5 播放链（`sign/v5*`、`playback_routes`、`playback_trace`、`network.rs`）尚未搬 |
+| 上游新增、本项目没有：`src/sign/v5.rs`、`v5_tables.rs`、`src/upstream/playback_routes.rs`、`playback_trace.rs`、`src/network.rs`、`src/network_proxy_tests.rs`、`tests/playback_recovery.rs` | 同上 |
+| `src/api/mod.rs`、`src/frb_generated.rs`、`src/desktop_media.rs`、`src/desktop_fetch.rs` | 不搬（FFI 门面 / 桌面播放器） |
+
+`src/endpoints/video.rs` 与 `src/upstream/client.rs` 同时属于 A 和 B：前者有我们的
+`pub apply_cenc_index`，后者有一行测试字段补充，两者同时也还在等 V5 批次的上游改动。
+
+2026-11-21 这一批之前，上述 B 组还包括 `dispatch.rs`、`account_*.rs`、`endpoints/mod.rs`、
+`router.rs`、`tests/static_and_loopback.rs`（`77d615e` 与 `0bb7497`），现已补齐并对齐。
 
 Phase 0 时 47 个源文件逐字节一致；Phase 2 之后 `server.rs` 与 `device/mod.rs` 各有一处
 小改动，降为 45 个。第 4 批之后 `video.rs`/`device/mod.rs` 的测试都移进了独立文件，
-所以**偏离文件仍是六个**：`lib.rs` / `runtime/mod.rs` / `server.rs` /
+所以到第 5a 批为止**偏离文件是六个**：`lib.rs` / `runtime/mod.rs` / `server.rs` /
 `device/mod.rs` / `core_log.rs` / `endpoints/video.rs`（见 §3.3），
 `sign/`（约 1,300 行）始终未动。`src/endpoints/video/**` 与
 `src/device/persistence_tests.rs` 与上游逐字节一致。
+
+2026-11-21 的第三批又加了两个：`config.rs`（测试路径）与 `upstream/client.rs`（一行测试字
+段），共八个；`persistence_tests.rs` 这一批重新取上游版本后仍逐字节一致。
 
 ---
 
@@ -474,6 +533,27 @@ fqapi-server listening on http://0.0.0.0:18921
 `add_route` 临时改名后，离线检查能准确报出 4 条"router references … but no module
 registers it"；还原后检查恢复通过。注意 `register_all` 漏调 `shuqi::register(s)`
 属于另一类故障（`add_route` 还在，离线检查抓不到），由 e2e 的活体探测兜底。
+
+### 4.10 第三批同步验证（L0/L1/L2，2026-11-21）
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 严格编译 | `CARGO_INCREMENTAL=0 cargo check --all-targets` | 通过 |
+| 严格 lint | `CARGO_INCREMENTAL=0 cargo clippy --all-targets -- -D warnings` | 通过，零警告 |
+| 格式 | `cargo fmt --all -- --check` | 通过 |
+| 全量测试 | `CARGO_INCREMENTAL=0 cargo test --workspace` | **339 passed / 0 failed**（本轮前 312） |
+| 接口文档契约 | `python scripts/check_api_doc.py` | OK：67 条路径 / 54 个路由段 / 53 个注册 api |
+| 逐字节一致性 | §3.4 的 blob 脚本 | 84 个一致；差异只落在 §3.3（8 个）与 §3.4-B（V5 未搬） |
+
+本轮只有一处测试需要改动，且属于**换路径**而非改断言：`config.rs` 的
+`the_shipped_config_json_still_parses`（见 §3.3）。其余 `tests/**` 与 `testdata/**`
+仍然与上游逐字节一致 —— 新增的 27 个用例全部来自上游文件本身
+（`device/persistence_tests.rs` 的版本退役与严格模式、`tests/static_and_loopback.rs`
+的 body 转发、`endpoints/config.rs` 的严格解析）。
+
+真机上游未验证：本批不触碰签名与播放，`chapters/{id}`、`directory`、`search` 的信道不变；
+`/api/v1/books/{id}/video-match` 与 `/api/v1/recommend/ugc-stories` 是新增只读路由，
+可在有令牌的环境用 `scripts/smoke.sh` 之外的手工 curl 验证。
 
 ---
 

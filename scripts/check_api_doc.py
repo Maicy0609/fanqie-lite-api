@@ -88,7 +88,7 @@ ROUTER_INJECTED = {
 SECTION_MODULES = {
     "首页与推荐": ["home.rs", "video.rs"],
     "搜索与分类": ["search.rs"],
-    "书籍": ["book.rs", "comments.rs"],
+    "书籍": ["book.rs", "comments.rs", "reader_video.rs"],
     "正文": ["content.rs", "full.rs", "dhcontent.rs", "toutiao.rs", "audio.rs", "audio_text.rs", "comments.rs"],
     "短剧": ["video.rs", "book.rs", "comments.rs"],
     "评论": ["comments.rs"],
