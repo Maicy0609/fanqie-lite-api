@@ -19,7 +19,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "fs", "io-util"] }
 tokio-util = { version = "0.7", features = ["io"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "http2", "rustls-no-provider", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "http2", "rustls-no-provider", "stream", "socks"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 webpki-roots = "1"
 aes = "0.8"
@@ -43,3 +43,8 @@ tower-http = { version = "0.6", default-features = false, features = ["fs", "set
 http-body-util = "0.1"
 futures = "0.3"
 log = "0.4"
+
+# `network::Policy::configure_blocking`（桌面代理）需要 blocking 客户端。服务端
+# 永远不调用它，但该模块在 windows/linux 上都会被编译，所以依赖要跟着上游保留。
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["blocking"] }

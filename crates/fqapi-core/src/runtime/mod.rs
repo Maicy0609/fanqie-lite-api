@@ -173,6 +173,10 @@ pub async fn init_core(
     log::info!("core init: port={port} mode={mode:?} config={config_path}");
 
     let cfg = Arc::new(Config::load(&config_path)?);
+    // The explicit proxy (if any) has to be published before the first client is
+    // built; `network` keys its client caches on the policy generation so a core
+    // restart with a different config rebuilds them.
+    crate::network::apply(&cfg.network_proxy)?;
     // Device registration reads the upstream identity (app version, UA) from the
     // same config file. An absent `upstream` section keeps the previous
     // hard-coded values byte for byte; publishing on every init is what lets a

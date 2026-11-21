@@ -3,10 +3,13 @@
 
 mod common;
 
-use common::{build_server, pool_json, MockReply, MockUpstream, TempDir};
+use common::{build_server, pool_json, query_map, MockReply, MockUpstream, TempDir};
 use fqapi_core::dispatch::{dispatch, Request};
 use fqapi_core::endpoints::Server;
+use md5::{Digest, Md5};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 const ALLOWED_URL: &str = "https://example.invalid/h264.mp4";
 const REJECTED_URL: &str = "https://example.invalid/bytevc2.mp4";
@@ -20,7 +23,10 @@ fn response_shapes(variants: Vec<Value>) -> Vec<(&'static str, Value)> {
         .map(|(i, v)| (format!("video_{i}"), v.clone()))
         .collect();
     let shortplay = json!({"key_seed": "AAAA", "video_list": video_map});
-    let array_model = json!({"video_list": variants});
+    let array_model = json!({"key_seed": "AAAA", "video_list": variants});
+    let decoy = json!({"key_seed": "AAAA", "video_list": {
+        "video_0": {"main_url": ALLOWED_URL, "codec_type": "h264"}
+    }});
     vec![
         (
             "shortplay object",
@@ -31,8 +37,11 @@ fn response_shapes(variants: Vec<Value>) -> Vec<(&'static str, Value)> {
             json!({"data": {"video_model": shortplay.to_string()}}),
         ),
         (
-            "nested shortplay",
-            json!({"data": {"episode": {"video_model": shortplay}}}),
+            "v5 grouped episode",
+            json!({"data": {"1004": {
+                "episode": {"video_model": shortplay},
+                "other": {"video_model": decoy}
+            }}}),
         ),
         (
             "array object",
@@ -154,10 +163,23 @@ async fn unrecognized_payload_keeps_legacy_raw_response_compatibility() {
         assert_eq!(status, 200);
         assert_eq!(body, expected);
     }
+
+    let payload = json!({"code": 0, "data": {"1004": {
+        "other": {"main_url": "https://example.invalid/other.mp4"}
+    }}});
+    let upstream = MockUpstream::start(move |_| MockReply::json(payload.clone())).await;
+    let dir = TempDir::new("video-v5-target-missing");
+    let server = build_server(&dir, Some(upstream.origin.clone()), &[], &[], &pool_json(5)).await;
+    for mode in ["mode=stream", ""] {
+        let (status, body) = request_video(&server, mode).await;
+        assert_eq!(status, 500, "{mode}: {body}");
+        assert_eq!(body["error"], "视频取流失败，请稍后重试", "{mode}: {body}");
+        assert!(!body.to_string().contains("other.mp4"), "{mode}: {body}");
+    }
 }
 
 #[tokio::test]
-async fn fallback_rejection_cannot_return_the_original_model_url() {
+async fn fallback_rejection_requires_a_conclusive_codec_decision() {
     let model = json!({
         "fallback_api": "https://example.invalid/fallback",
         "video_list": [{
@@ -190,6 +212,28 @@ async fn fallback_rejection_cannot_return_the_original_model_url() {
         let requests = upstream.requests();
         assert!(requests.iter().any(|r| r.path == "/fallback"));
         assert!(requests.iter().all(|r| !r.path.ends_with(".mp4")));
+    }
+
+    let model = json!({
+        "fallback_api": "https://example.invalid/fallback",
+        "video_list": [{
+            "main_url": "https://example.invalid/original.mp4",
+            "encrypt_info": {"encrypt": true}
+        }]
+    });
+    let upstream = MockUpstream::start(move |req| {
+        if req.path == "/fallback" {
+            return MockReply::status(503);
+        }
+        MockReply::json(json!({"data": {"video_model": model}}))
+    })
+    .await;
+    let dir = TempDir::new("video-codec-fallback-unknown");
+    let server = build_server(&dir, Some(upstream.origin.clone()), &[], &[], &pool_json(5)).await;
+    for mode in ["mode=stream", ""] {
+        let (status, body) = request_video(&server, mode).await;
+        assert_eq!(status, 500, "{mode}: {body}");
+        assert_eq!(body["error"], "视频取流失败，请稍后重试", "{mode}: {body}");
     }
 }
 
@@ -254,7 +298,14 @@ async fn successful_download_keeps_the_local_source_contract() {
 /// silently loses a row (measured 2026-10-12 on the live upstream).
 #[tokio::test]
 async fn stream_variants_merge_the_fallback_list_so_the_top_tier_survives() {
-    let upstream = MockUpstream::start(|req| {
+    let v5_calls = Arc::new(AtomicUsize::new(0));
+    let v5_calls_for_mock = Arc::clone(&v5_calls);
+    let upstream = MockUpstream::start(move |req| {
+        if req.path == "/novel/player/multi_video_model/player/v1"
+            && v5_calls_for_mock.fetch_add(1, Ordering::SeqCst) == 0
+        {
+            return MockReply::status(503);
+        }
         if req.path == "/fallback" {
             return MockReply::json(json!({"video_info": {"data": {
                 "key_seed": "AAAA",
@@ -282,7 +333,7 @@ async fn stream_variants_merge_the_fallback_list_so_the_top_tier_survives() {
     .await;
     let dir = TempDir::new("video-variant-merge");
     let server = build_server(&dir, Some(upstream.origin.clone()), &[], &[], &pool_json(5)).await;
-    let (status, body) = request_video(&server, "mode=stream").await;
+    let (status, body) = request_video(&server, "mode=stream&_playback_purpose=prefetch").await;
     assert_eq!(status, 200, "{body}");
     let names: Vec<&str> = body["variants"]
         .as_array()
@@ -300,7 +351,37 @@ async fn stream_variants_merge_the_fallback_list_so_the_top_tier_survives() {
         32,
         "{body}"
     );
-    assert!(upstream.requests().iter().any(|r| r.path == "/fallback"));
+    let requests = upstream.requests();
+    assert!(requests.iter().any(|r| r.path == "/fallback"));
+    let v5_requests: Vec<_> = requests
+        .iter()
+        .filter(|r| r.path == "/novel/player/multi_video_model/player/v1")
+        .collect();
+    assert_eq!(v5_requests.len(), 2);
+    assert!(v5_requests
+        .iter()
+        .all(|request| !query_map(&request.query).contains_key("_playback_purpose")));
+    assert_ne!(v5_requests[0].query, v5_requests[1].query);
+    let v5 = v5_requests[1];
+    assert_eq!(v5.method, "POST");
+    assert_eq!(
+        query_map(&v5.query).get("aid").map(String::as_str),
+        Some("8662")
+    );
+    assert_eq!(v5.header("content-encoding"), Some("gzip"));
+    assert_eq!(
+        v5.header("content-type"),
+        Some("application/json; charset=utf-8")
+    );
+    assert!(v5.header("x-medusa").is_some());
+    assert!(v5.header("x-argus").is_none());
+    let expected_stub = hex::encode_upper(Md5::digest(&v5.body));
+    assert_eq!(v5.header("x-ss-stub"), Some(expected_stub.as_str()));
+    let plain = fqapi_core::crypto::gunzip(&v5.body).expect("gzip V5 body");
+    let wire: Value = serde_json::from_slice(&plain).expect("V5 JSON body");
+    assert!(wire.get("_playback_purpose").is_none());
+    assert_eq!(wire["mixed_video_id_map"]["1004"], json!(["episode"]));
+    assert_eq!(wire["dr_scene"], "player");
 }
 
 /// The fallback list's low tiers are often bytevc2. Merging must not smuggle

@@ -62,6 +62,39 @@ fn reads_the_episode_vertical_flag() {
         })),
         Some(true)
     );
+    let target = |body: Value, id: &str| episode_vertical_value(&body, Some(id));
+    assert_eq!(
+        target(
+            json!({
+                "data": { "1004": { "other": { "vertical": true } } }
+            }),
+            "episode",
+        ),
+        None
+    );
+    assert_eq!(
+        target(
+            json!({
+                "data": { "video_info_list_map": {
+                    "other": [{ "vertical": true }]
+                } }
+            }),
+            "episode",
+        ),
+        None
+    );
+    assert_eq!(
+        target(
+            json!({
+                "data": {
+                    "episode": { "video_model": "{}", "vertical": false },
+                    "other": { "video_model": "{}", "vertical": true }
+                }
+            }),
+            "episode",
+        ),
+        Some(false)
+    );
 }
 
 #[test]
@@ -239,4 +272,120 @@ fn fallback_source_prefers_h264_on_equal_quality() {
     let map = root.as_object().unwrap();
     let (url, _) = expect_source(extract_fallback_video_source(map));
     assert_eq!(url, "https://example.test/h264.mp4");
+}
+
+/// Counting-only face of the variant pipeline: the same gates the async path
+/// runs, over an already-decoded `video_list`, with no network and no `Ctx`.
+fn variant_counts_of(video_list: &Value, key_seed: Option<&[u8]>) -> VariantCounts {
+    let batch =
+        variant_rows_scored_with_counts(video_list.as_object(), key_seed.map(|s| s.to_vec()));
+    let (rows, counts) = tally_variants(batch.rows, std::slice::from_ref(&batch.counts));
+    assert_eq!(
+        rows.len(),
+        counts.kept,
+        "kept must be the panel's quality_count"
+    );
+    assert_eq!(
+        counts.kept + counts.dropped.total(),
+        counts.raw_entries,
+        "every entry is either kept or explained: {counts:?}"
+    );
+    counts
+}
+
+#[test]
+fn variant_counts_separate_a_one_entry_list_from_a_gated_five_entry_list() {
+    // 这是 `quality_count` 缺的分母:五条里三条 bytevc2、剩下的两条其实是同
+    // 一档(不同地址),所以 `quality_count=1` 既可能是「上游只给了一条」,
+    // 也可能是「上游给了五条、被门和合并留下一条」——计数器把两者分开。
+    let video_list = json!({
+        "video_5": { "main_url": "https://example.test/1080-vvc.mp4",
+            "vwidth": 1080, "vheight": 1920, "codec_type": "bytevc2" },
+        "video_4": { "main_url": "https://example.test/720-vvc.mp4",
+            "vwidth": 720, "vheight": 1280, "codec_type": "bytevc2" },
+        "video_3": { "main_url": "https://example.test/540-vvc.mp4",
+            "vwidth": 540, "vheight": 960, "codec_type": "bytevc2" },
+        "video_2": { "main_url": "https://example.test/1080-h264.mp4",
+            "vwidth": 1080, "vheight": 1920, "codec_type": "h264" },
+        "video_1": { "main_url": "https://example.test/1080-vvc1-alt.mp4",
+            "vwidth": 1080, "vheight": 1920, "codec_type": "bytevc1" }
+    });
+    let counts = variant_counts_of(&video_list, Some(b"AAAA"));
+    assert_eq!(counts.raw_entries, 5);
+    assert_eq!(counts.kept, 1);
+    assert_eq!(
+        counts.dropped,
+        VariantDropCounts {
+            bytevc2: 3,
+            no_url: 0,
+            no_meta: 0,
+            duplicate: 1,
+        }
+    );
+    assert_eq!(
+        counts.dropped.summary(),
+        "bytevc2:3,no_url:0,no_meta:0,dup:1"
+    );
+}
+
+#[test]
+fn variant_counts_keep_every_tier_of_a_healthy_five_tier_model() {
+    let video_list = json!({
+        "video_5": { "main_url": "https://example.test/1080.mp4",
+            "vwidth": 1080, "vheight": 1920, "codec_type": "h264" },
+        "video_4": { "main_url": "https://example.test/720.mp4",
+            "vwidth": 720, "vheight": 1280, "codec_type": "h264" },
+        "video_3": { "main_url": "https://example.test/540.mp4",
+            "vwidth": 540, "vheight": 960, "codec_type": "h264" },
+        "video_2": { "main_url": "https://example.test/480.mp4",
+            "vwidth": 480, "vheight": 854, "codec_type": "h264" },
+        "video_1": { "main_url": "https://example.test/360.mp4",
+            "vwidth": 360, "vheight": 640, "codec_type": "h264" }
+    });
+    let counts = variant_counts_of(&video_list, Some(b"AAAA"));
+    assert_eq!(counts.raw_entries, 5);
+    assert_eq!(counts.kept, 5);
+    assert_eq!(counts.dropped.total(), 0);
+    assert_eq!(
+        counts.dropped.summary(),
+        "bytevc2:0,no_url:0,no_meta:0,dup:0"
+    );
+}
+
+#[test]
+fn variant_counts_give_undecodable_urls_and_missing_metadata_their_own_buckets() {
+    let video_list = json!({
+        "video_3": { "main_url": "https://example.test/720.mp4",
+            "vwidth": 720, "vheight": 1280, "codec_type": "h264" },
+        // 解不出可播地址(`decrypt_variant_entry` 返回 None),不是 bytevc2。
+        "video_2": { "main_url": "not-a-playable-url",
+            "vwidth": 540, "vheight": 960, "codec_type": "h264" },
+        // 地址没问题,但缺宽高 => 拼不出画质名,面板那一档没法显示。
+        "video_1": { "main_url": "https://example.test/360.mp4",
+            "codec_type": "h264" }
+    });
+    // 无 key_seed 时,非 URL 文本没有任何解密路径可走,必然落进 `no_url`。
+    let counts = variant_counts_of(&video_list, None);
+    assert_eq!(counts.raw_entries, 3);
+    assert_eq!(counts.kept, 1);
+    assert_eq!(counts.dropped.no_url, 1);
+    assert_eq!(counts.dropped.no_meta, 1);
+    assert_eq!(counts.dropped.bytevc2, 0);
+    assert_eq!(counts.dropped.duplicate, 0);
+}
+
+#[test]
+fn variant_counts_have_no_no_key_bucket_because_the_key_is_not_a_gate_here() {
+    // 档位列表这条路径从不因派生不出内容密钥而丢档:缺 `spade_a` 时
+    // `derive_spade_content_key` 给一个空密钥,行照样进面板(与选流门不同,
+    // `extract_shortplay_video_model_source` 才有 `encrypted_without_seed` 前置)。
+    // 所以计数器里没有 `no_key`——一个永远为 0 的桶只会误导下一个人。
+    let video_list = json!({
+        "video_1": { "main_url": "https://example.test/720.mp4",
+            "vwidth": 720, "vheight": 1280 }
+    });
+    let counts = variant_counts_of(&video_list, Some(b"AAAA"));
+    assert_eq!(counts.raw_entries, 1);
+    assert_eq!(counts.kept, 1);
+    assert_eq!(counts.dropped.total(), 0);
 }
