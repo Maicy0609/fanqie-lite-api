@@ -45,7 +45,8 @@ fqapp/rust/Cargo.toml    →  crates/fqapi-core/Cargo.toml  (已裁剪，见 §3
 | 2026-10-31 | `4eaeac3..07cfb22` | 热搜 472 榜单（`de304f7`/`1bdc189`）、听书 `audio_timepoint`（`35722c1`/`2a5f41d`/`32ef94b`）、短剧 `vertical`（`6f21915`）、P1-7 密文缓存（`76aa333`） | rustls 补丁（`27adbde`）、`native/` 播放端 atempo（不适用于 HTTP 后端） |
 | 2026-11-07 上午 | `07cfb22..5b536cf` | 见下方 §1.2，共 15 个提交 | 当日后续批次已补齐，见 §1.3 |
 | 2026-11-07 下午 | `5b536cf..4c7bc6d` | 测试拆分 4 个、漫画回退 2 个、书旗源 3 个提交，见 §1.3 | `77d615e`（loopback 转发 account POST body）、`0bb7497`（`reader_video` 端点）、`b1f66c5`/`beaf21b`/`143f719`（桌面播放器） |
-| 2026-11-21 | `6bfd81d..2c53f236`（28 个非 merge 提交） | L0/L1/L2：`77d615e` 与 `0bb7497` 补齐、短篇 `ugc-stories`、`MultiGzDecoder`、正文解密错误上抛、设备身份外置（`config.upstream`）+ `registered_version_code` 版本退役、账号传输改走 `account_transport()`，见 §1.4 | **短剧 V5 播放链**（`sign/v5*`、`upstream/playback_*`、`network.rs`、`video.rs`、`base.rs` 及 4 个相关测试）、桌面播放器 `desktop_*`、`frb_generated` |
+| 2026-11-21 | `6bfd81d..2c53f236`（28 个非 merge 提交） | L0/L1/L2（第 6/7 批）：`77d615e` 与 `0bb7497` 补齐、短篇 `ugc-stories`、`MultiGzDecoder`、正文解密错误上抛、设备身份外置（`config.upstream`）+ `registered_version_code` 版本退役、账号传输改走 `account_transport()`，见 §1.4 | — |
+| 2026-11-21 | 同上 | L3（第 8 批）：短剧 V5 播放链全部落地——`sign/v5*`、`upstream/playback_{routes,trace}.rs`、`network.rs` 代理策略、`video.rs` 双门回退与身份轮换、`base.rs` 的 `v5_playback*` 包装，见 §1.5 | `desktop_media.rs` / `desktop_fetch.rs` / `frb_generated.rs` / `network_proxy_tests.rs`（桌面与 FFI，服务端不适用） |
 
 **口径**：范围按拓扑算（`git log <基线>..origin/master -- rust/`），不按提交时间。
 `07cfb22` 之后有 17 个提交的 author date 早于 2026-10-31 11:41，但它们是 10-31 20:57
@@ -106,7 +107,7 @@ fqapp/rust/Cargo.toml    →  crates/fqapi-core/Cargo.toml  (已裁剪，见 §3
 
 ### 1.4 第三批（2026-11-21，L0/L1/L2）
 
-本轮先搬"低阻力/中阻力"部分，短剧 V5 播放链留到下一批。做法全部是**整文件取上游当前版本**，
+本轮先搬"低阻力/中阻力"部分，短剧 V5 播放链留到 §1.5。做法全部是**整文件取上游当前版本**，
 只有 4 个文件因为本项目偏移需要手工合并。
 
 | 组 | 文件 | 内容 |
@@ -123,13 +124,47 @@ fqapp/rust/Cargo.toml    →  crates/fqapi-core/Cargo.toml  (已裁剪，见 §3
 `init_core` 仍用 `DevicePool::new`。本项目的启动顺序已经保证"先 `provision_pool_key`
 再建池、密钥缺失就拒绝启动"，严格模式在这里是同一件事的第二次表达。
 
-**这一批暴露的三个连带点**（下次搬 V5 时会再遇到）：
+**这一批暴露的三个连带点**：
 
 1. `server.rs` 的 `use crate::api::{...}` 必须改成 `crate::runtime::`（§3.2 的改名连带）。
-2. 新增 `Device` 字段后，`upstream/client.rs` 里测试用的 `Device { .. }` 字面量要补字段；
-   V5 批次搬入上游 `client.rs` 时会被覆盖，届时删除这处小改。
+2. 新增 `Device` 字段后，`upstream/client.rs` 里测试用的 `Device { .. }` 字面量要补字段。
+   第 8 批已整文件取上游 `client.rs`，这处临时小改随之消失（上游自己补了同样的值）。
 3. `config.rs` 新增的单测读的是 APK 资产 `../assets/config/config.json`，本项目没有该目录，
    改指向 `data/config/config.json`（见 §3.3）。
+
+### 1.5 第四批（2026-11-21，L3 短剧 V5 播放链）
+
+一次性搬完，因为它内部耦合很紧：`video.rs` 调 `sign::v5` 与 `upstream::playback_routes`，
+`base.rs` / `client.rs` 提供 `v5_playback*` 包装，`http.rs` 负责按代理策略建客户端并打点，
+`network.rs` 持有代理与客户端缓存。少任何一个都编不过。
+
+| 文件 | 内容 |
+|---|---|
+| `sign/v5.rs`、`sign/v5_tables.rs`、`sign/mod.rs` | v04.10.03 播放签名（aid 8662、`VERSION_CODE 74332`）。算法与常量表移植自 GPL-3.0-only 的 `N3urda/hongguoTV`（`18c37c2`），见 §1.6 的许可说明 |
+| `upstream/playback_routes.rs` | 播放「门」健康度：空 body 冷却 30s、非空失败 5s、连续两轮全空才换身份；只用进程内单调时钟，不落任何请求参数 |
+| `upstream/playback_trace.rs` | 每个门的请求打点（request_id / 耗时 / 长度 / 重定向跳数），**不含 URL、query、body 或签名** |
+| `upstream/http.rs`、`upstream/client.rs`、`upstream/mod.rs` | 传输层改走 `network::ClientCache`；新增 `v5_playback` / `v5_playback_with_device` / `rotate_playback_identity`；`account_transport()` 也走同一套代理策略 |
+| `endpoints/video.rs`、`endpoints/base.rs`、`endpoints/video/spade_vectors.rs` | V5 主门 + `video_tab` 回退门、清晰度分级与短边限制、变体丢弃计数；`phoenix_player_*` 更名为 `video_detail_*`（只用在本文件内） |
+| `network.rs` | 显式代理策略（http/https/socks5/socks5h），客户端按 generation 缓存 |
+| `tests/playback_recovery.rs` 及 4 个既有测试 | 门的回退、冷却、身份轮换契约 |
+
+**行为变化（客户端可见）**：`GET /api/v1/videos/{id}?mode=stream` 的响应形状不变
+（`video_url` / `key_hex` / `variants[]`），但取源不再依赖旧的 spade 单门。旧门失效时
+服务端自动走回退门并轮换身份，客户端无需改动。
+
+**接线三处**（都属于"不改就编不过"）：
+
+1. `lib.rs` 加 `mod network;`（上游是私有模块，只有 `api`/`http`/`video` 用）；
+2. `Cargo.toml` 的 `reqwest` 加 `socks` feature，并恢复
+   `[target.'cfg(any(windows, target_os = "linux"))'.dependencies] reqwest/blocking`
+   ——`network::Policy::configure_blocking` 在 windows/linux 上参与编译；
+3. `runtime/mod.rs` 在 `Config::load` 之后加 `crate::network::apply(&cfg.network_proxy)?`。
+
+### 1.6 许可与出处
+
+`sign/v5.rs` 与 `upstream/playback_routes.rs` 的文件头注明了上游出处
+（`N3urda/hongguoTV` @ `18c37c2`，GPL-3.0-only；交叉核对 `beilunyang/openhongguo` PR 13）。
+本项目同为 GPL-3.0，兼容；分发二进制时这些声明随源码一并提供即可。
 
 ## 2. 同步方式
 
@@ -187,10 +222,11 @@ Phase 0 的目标是"骨架，不改行为"。因此偏离只有"删掉不存在
 | 增量 | `src/server.rs` | `handler()` 里的 `use crate::api::{race_dispatch, RaceOutcome}` 改为 `use crate::runtime::…` | 无（§3.2 重命名的连带影响：上游 `5b536cf` 新增的引用要跟着改路径） |
 | 0 | `src/core_log.rs` | 删 `android_logger` 分支：`LOGCAT_TAG` 常量、`CoreLogger.android` 字段、`new()` 中的初始化、`log()` 中的镜像、`flush()` 中的转发；文档注释同步 | **有**：不再镜像到 logcat（服务端没有 logcat） |
 | 4 | `src/core_log.rs` | `log()` 写完文件后把同一行 `println!` 到 stdout（3 行） | **有**：容器只采集 stdout，否则 `docker logs` 里看不到任何核心诊断 |
-| 0 | `Cargo.toml` | 删 `flutter_rust_bridge`、`android_logger`、`[build-dependencies] cc`、`[target.'cfg(windows)'.dependencies] reqwest/blocking`；`crate-type` 改为 `["rlib"]` | 无 |
+| 0 | `Cargo.toml` | 删 `flutter_rust_bridge`、`android_logger`、`[build-dependencies] cc`、`crate-type` 改为 `["rlib"]`；第 8 批恢复 `reqwest` 的 `socks` feature 与 `[target.'cfg(any(windows, target_os = "linux"))'.dependencies] reqwest/blocking`（`network.rs` 需要） | 无 |
 | 0 | 根 `Cargo.toml` | 新增 workspace；`[profile.*]` 从成员清单移到根（Cargo 只认根 profile） | 无 |
 | 增量 | `src/config.rs` | `the_shipped_config_json_still_parses` 的路径由 `../assets/config/config.json` 改为 `../../data/config/config.json`，并去掉 `port != 0` 断言（本项目的配置文件把 `port` 留 0，监听地址走 `--listen`） | 无（测试只校验"随仓库发布的配置仍能解析"） |
-| 增量 | `src/upstream/client.rs` | 测试辅助里的 `Device { .. }` 补一行 `registered_version_code: String::new()` | 无（空值＝版本未知，不会被退役；搬 V5 批次时随上游 `client.rs` 一起覆盖） |
+| 增量 | `src/lib.rs` | 加 `mod network;`（上游写在 `pub mod json;` 之后，同一位置） | 无（模块私有，同上游） |
+| 增量 | `src/network.rs` | `Policy::configure_blocking` 加 `#[allow(dead_code)]` 与一行注释 | 无（唯一调用方 `desktop_fetch` 未搬，服务端永远不走 blocking 客户端） |
 
 ### 3.4 与上游一致的源文件（逐字节一致）
 
@@ -207,29 +243,30 @@ for p in $(git -C /path/to/fqapp ls-tree -r --name-only origin/master rust/src r
 done
 ```
 
-基准下 84 个文件逐字节一致，其余分成两类。
+基准下 99 个文件逐字节一致，其余分成两类。
 
-**A. 本项目的偏离（§3.3 登记，共 8 个文件）**：
+**A. 本项目的偏离（§3.3 登记，共 7 个文件）**：
 
 ```
 src/lib.rs            src/runtime/mod.rs     src/server.rs
 src/device/mod.rs     src/core_log.rs        src/endpoints/video.rs
-src/config.rs         src/upstream/client.rs
+src/config.rs         src/network.rs
 ```
 
-**B. 尚未搬的上游改动（见 §1.1 的"未搬"列，不算偏离）**：
+（`runtime/mod.rs` 在上游叫 `api/mod.rs`，所以它不出现在逐字节比对的 DIFF 里，
+但比对时按 §3.2 的模块名换算；`network.rs` 的偏离只有一行 `#[allow(dead_code)]`。）
 
-| 文件 | 差异来源 |
+**B. 上游有、本项目不搬的文件（不算偏离）**：
+
+| 文件 | 原因 |
 |---|---|
-| `src/endpoints/base.rs`、`video/spade_vectors.rs`、`src/sign/mod.rs`、`src/upstream/{http,mod}.rs`、`tests/{loopback_guard,mock_upstream_contract,upstream_retry,video_codec_gate}.rs` | 短剧 V5 播放链（`sign/v5*`、`playback_routes`、`playback_trace`、`network.rs`）尚未搬 |
-| 上游新增、本项目没有：`src/sign/v5.rs`、`v5_tables.rs`、`src/upstream/playback_routes.rs`、`playback_trace.rs`、`src/network.rs`、`src/network_proxy_tests.rs`、`tests/playback_recovery.rs` | 同上 |
-| `src/api/mod.rs`、`src/frb_generated.rs`、`src/desktop_media.rs`、`src/desktop_fetch.rs` | 不搬（FFI 门面 / 桌面播放器） |
+| `src/api/mod.rs`、`src/frb_generated.rs` | FFI 门面（本项目用 `runtime`） |
+| `src/desktop_media.rs`、`src/desktop_fetch.rs` | 桌面播放器 / 下载器 |
+| `src/network_proxy_tests.rs` | 桌面代理测试，引用了 `crate::api` |
 
-`src/endpoints/video.rs` 与 `src/upstream/client.rs` 同时属于 A 和 B：前者有我们的
-`pub apply_cenc_index`，后者有一行测试字段补充，两者同时也还在等 V5 批次的上游改动。
-
-2026-11-21 这一批之前，上述 B 组还包括 `dispatch.rs`、`account_*.rs`、`endpoints/mod.rs`、
-`router.rs`、`tests/static_and_loopback.rs`（`77d615e` 与 `0bb7497`），现已补齐并对齐。
+第 8 批（§1.5）之后，`endpoints/{base,video,spade_vectors}.rs`、`sign/**`、`upstream/**`、
+`tests/{loopback_guard,mock_upstream_contract,upstream_retry,video_codec_gate}.rs` 与
+`tests/playback_recovery.rs` 都已与上游逐字节一致。
 
 Phase 0 时 47 个源文件逐字节一致；Phase 2 之后 `server.rs` 与 `device/mod.rs` 各有一处
 小改动，降为 45 个。第 4 批之后 `video.rs`/`device/mod.rs` 的测试都移进了独立文件，
@@ -238,8 +275,9 @@ Phase 0 时 47 个源文件逐字节一致；Phase 2 之后 `server.rs` 与 `dev
 `sign/`（约 1,300 行）始终未动。`src/endpoints/video/**` 与
 `src/device/persistence_tests.rs` 与上游逐字节一致。
 
-2026-11-21 的第三批又加了两个：`config.rs`（测试路径）与 `upstream/client.rs`（一行测试字
-段），共八个；`persistence_tests.rs` 这一批重新取上游版本后仍逐字节一致。
+2026-11-21 的第三、四批（§1.4 / §1.5）把偏离文件定为七个：上面六个加 `config.rs`
+（测试路径）；`network.rs` 的一行 `allow` 使总数成为八处登记，但按文件算是第七个。
+`upstream/client.rs` 的临时小改已随上游文件覆盖而消失。
 
 ---
 
@@ -554,6 +592,39 @@ registers it"；还原后检查恢复通过。注意 `register_all` 漏调 `shuq
 真机上游未验证：本批不触碰签名与播放，`chapters/{id}`、`directory`、`search` 的信道不变；
 `/api/v1/books/{id}/video-match` 与 `/api/v1/recommend/ugc-stories` 是新增只读路由，
 可在有令牌的环境用 `scripts/smoke.sh` 之外的手工 curl 验证。
+
+### 4.11 第四批同步验证（L3 短剧 V5，2026-11-21）
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 严格编译 | `CARGO_INCREMENTAL=0 cargo check --all-targets` | 通过 |
+| 严格 lint | `CARGO_INCREMENTAL=0 cargo clippy --all-targets -- -D warnings` | 通过，零警告 |
+| 格式 | `cargo fmt --all -- --check` | 通过 |
+| 全量测试 | `CARGO_INCREMENTAL=0 cargo test --workspace` | **371 passed / 0 failed**（本轮前 339；新增 32 个来自 `tests/playback_recovery.rs` 与 4 个被更新的既有测试） |
+| 接口文档契约（静态） | `python scripts/check_api_doc.py` | OK：67 条路径 / 54 个路由段 / 53 个注册 api |
+| 接口文档契约（活体） | `python clients/python/e2e.py --binary <bin>` | 通过：mock 上游 + 真实二进制，**文档里每条路径都非 404** |
+| 真实上游抽查 | 手工 curl（真实 `fqapi-server`） | `/healthz` 200；无 token 401；`/books/{id}/video-match` 200；`/recommend/ugc-stories` 200（真实 feed）；未知路由 404；`/videos/{id}?mode=stream` 500（上游空门，见下） |
+| 逐字节一致性 | §3.4 的 blob 脚本 | **99 个一致**；差异只落在 §3.3 登记的 7 个文件与 §3.4-B 的 5 个不搬文件 |
+
+**文档发现的一处真错误（已修）**：`/api/v1/manga/videos/{pseries_id}` 原本记录
+`offset`/`count`/`total`/`pseries_type` 四个分页参数，上游已把该路由改成直接返回
+剧集目录（与 `/books/{id}/directory` 同形），四个参数不再被读取。静态检查与活体探测
+同时报出，`docs/API.md` 已改为"返回目录、参数不再生效"。这正是"文档必须跟着代码走"
+的价值：搬运本身没出错，是文档落后了。
+
+**签名链的真机结论（A/B 对照）**：本机没有可播的短剧出口，但对照能说明问题。
+用同一个 `vid` 分别打第 8 批前后两个二进制（`fa6b911` 与当前）：
+
+| 版本 | 结果 |
+|---|---|
+| 第 8 批之前 | V5 门 `200` + 空 body 被当 JSON 解析 → `500 parse upstream json: EOF while parsing a value` |
+| 第 8 批之后 | 识别为"空 body 门"，转 `video_tab` 回退门 → 上游 `200` + 业务码 `101114` → `500 视频取流失败,请稍后重试` |
+
+结论：**不是搬迁引入的回归**，两条路都被上游挡在同一处（`200` 空 body / 业务错误），
+差别只是第 8 批把"JSON 解析失败"换成了可读的错误与完整的门打点。服务端能做到的
+（识别空门、回退、冷却、换身份）都已在 `rust.log` 里可观测；剩下的是出口 IP / 身份
+被上游风控挡住，属 `PORTING-ANALYSIS.md` §9.2 已登记的边界，不是代码问题。
+离线契约由 `tests/playback_recovery.rs`（32 个用例，mock 上游）覆盖。
 
 ---
 

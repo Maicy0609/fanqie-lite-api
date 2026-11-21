@@ -69,6 +69,11 @@
 
 分页用 `offset` + `passback` 双游标：`passback` 缺省时回落 `offset`。
 
+**搜索结果的真实容器是 `search_tabs[]`**（每个 tab 有 `tab_type` / `title` / `data[]` /
+`passback` / `next_offset`）。上游现在不再返回顶层的 `data.books`：`data` 常为空对象，
+条目在 `search_tabs[].data[].book_data` 里；短剧/漫画/听书等 tab 也在这里，只是
+`tab_type` 不同。客户端（含上游 Flutter 端）就是按 `search_tabs` 解析的。
+
 ## 书籍
 
 | 方法 | 路径 | 必填 | 常用可选 | 说明 |
@@ -123,6 +128,11 @@
 `variants[]` 是高→低的清晰度列表，空数组表示单流（客户端应隐藏清晰度入口）。
 编码门在服务端：`bytevc2` 会被拒，所以列表里不会出现它。
 
+播放源由服务端在两条上游「门」之间自动选：V5 签名的 `multi_video_model/player/v1`
+为主，它返回 `200` 但 body 为空时，改用 V5 签名的 `video_tab` 回退门（同一设备身份），
+并把空门冷却一段时间；连续多轮全空才换身份。**这些都在服务端完成，客户端只看
+`video_url` / `key_hex` / `variants[]`，不需要知道走的是哪条门。**
+
 ## 评论
 
 | 方法 | 路径 | 必填 | 常用可选 | 说明 |
@@ -140,7 +150,7 @@
 | 方法 | 路径 | 必填 | 常用可选 | 说明 |
 |---|---|---|---|---|
 | GET | `/api/v1/manga/{item_ids}` | — | `api_type` `book_id` `show_html` | 漫画章节。返回 `images: ["/src/img_<sha256>.jpg", ...]` |
-| GET | `/api/v1/manga/videos/{pseries_id}` | — | `offset`(1) `count`(30) `total`(80) `pseries_type`(5) | 漫剧剧集列表 |
+| GET | `/api/v1/manga/videos/{pseries_id}` | — | — | 漫剧的剧集目录。返回形状与 `/books/{id}/directory` 相同（`data.item_data_list[]`）；分页参数 `offset`/`count`/`total`/`pseries_type` 上游已不再读取 |
 
 `show_html=1` 时额外返回一段可直接渲染的 `<img>` HTML。
 
