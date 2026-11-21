@@ -173,6 +173,11 @@ pub async fn init_core(
     log::info!("core init: port={port} mode={mode:?} config={config_path}");
 
     let cfg = Arc::new(Config::load(&config_path)?);
+    // Device registration reads the upstream identity (app version, UA) from the
+    // same config file. An absent `upstream` section keeps the previous
+    // hard-coded values byte for byte; publishing on every init is what lets a
+    // stop/start pair in the same process pick up a reloaded config.
+    crate::device::register::set_upstream_identity(cfg.upstream.clone());
     let root = resolve_runtime_dir(&config_path, &runtime_dir);
     let src_dir = root.join("src");
     let _ = std::fs::create_dir_all(&src_dir);

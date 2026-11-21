@@ -156,6 +156,16 @@ pub struct Device {
     /// the device is registered again.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub openudid: String,
+    /// The upstream `version_code` this device was registered with.
+    ///
+    /// It is what makes a changed identity observable: the pool retires the
+    /// devices that were registered under the previous version instead of
+    /// handing them out for a version they never claimed. `serde(default)`
+    /// keeps pools written before this field existed loadable; those devices
+    /// carry an empty value, which is treated as "unknown" and kept (see
+    /// `DevicePool::build`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub registered_version_code: String,
 }
 
 /// The on-disk JSON shape (mirrors device_pool.json).
@@ -181,6 +191,7 @@ struct PoolState {
 
 pub struct DevicePool {
     file: PathBuf,
+    strict_key: Option<zeroize::Zeroizing<[u8; 32]>>,
     /// Shared with the commit task, which re-checks the snapshot version.
     state: Arc<Mutex<PoolState>>,
     registrar: Registrar,
@@ -196,6 +207,18 @@ pub struct DevicePool {
 impl DevicePool {
     pub async fn new(file: impl AsRef<Path>) -> Result<Arc<Self>, String> {
         Self::build(file, None).await
+    }
+
+    /// Linux production storage fails closed; legacy/mock constructors retain
+    /// their existing contract on every host.
+    pub async fn for_runtime(file: impl AsRef<Path>) -> Result<Arc<Self>, String> {
+        Self::build_with_policy(
+            file,
+            None,
+            register::current_version_code(),
+            cfg!(target_os = "linux"),
+        )
+        .await
     }
 
     /// Pool whose registration traffic is redirected to a local mock origin.
@@ -227,9 +250,56 @@ impl DevicePool {
         file: impl AsRef<Path>,
         mock_origin: Option<String>,
     ) -> Result<Arc<Self>, String> {
+        Self::build_with_version(file, mock_origin, register::current_version_code()).await
+    }
+
+    /// The version the pool's devices must have been registered with.
+    ///
+    /// It is a parameter rather than a read of the process-wide identity cell
+    /// so that the retirement rule can be exercised without mutating global
+    /// state that other tests share.
+    async fn build_with_version(
+        file: impl AsRef<Path>,
+        mock_origin: Option<String>,
+        current_version: String,
+    ) -> Result<Arc<Self>, String> {
+        Self::build_with_policy(file, mock_origin, current_version, false).await
+    }
+
+    async fn build_with_policy(
+        file: impl AsRef<Path>,
+        mock_origin: Option<String>,
+        current_version: String,
+        strict: bool,
+    ) -> Result<Arc<Self>, String> {
         let file = file.as_ref().to_path_buf();
+        let strict_key = if strict {
+            Some(zeroize::Zeroizing::new(
+                pool_crypto::pool_key().ok_or("Linux device pool requires a confirmed key")?,
+            ))
+        } else {
+            None
+        };
         let mut devices = Vec::new();
-        if let Ok(data) = tokio::fs::read(&file).await {
+        if strict {
+            match tokio::fs::read(&file).await {
+                Ok(data) => {
+                    let plain = if pool_crypto::pool_file_is_encrypted(&data) {
+                        pool_crypto::decrypt_pool_file_with_key(
+                            &data,
+                            strict_key.as_ref().unwrap(),
+                        )?
+                    } else {
+                        data
+                    };
+                    devices = serde_json::from_slice::<PoolFile>(&plain)
+                        .map_err(|e| format!("Linux device pool invalid: {e}"))?
+                        .android;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.to_string()),
+            }
+        } else if let Ok(data) = tokio::fs::read(&file).await {
             if pool_crypto::pool_file_is_encrypted(&data) {
                 // P1-2: encrypted pool file. Decrypt with the provisioned
                 // key; an undecryptable file (wrong key, tampering) is
@@ -289,8 +359,35 @@ impl DevicePool {
             }
         }
         devices.truncate(MAX_POOL_SIZE);
+        // A changed upstream identity retires the devices that were registered
+        // under the previous version: handing them out would make the app
+        // report a version they never claimed.
+        //
+        // Only devices that *say* which version they were registered with are
+        // retired. A pool written before this field existed carries no
+        // version, and those devices are kept: an app upgrade must not wipe
+        // the pool and trigger a burst of registrations against the upstream.
+        // They are replaced one by one as they are used.
+        //
+        // An empty `current_version` means "nothing to compare against", which
+        // is not the same as the default version: the default is spelled out
+        // by the identity itself, so it is never empty.
+        if !current_version.is_empty() {
+            let before = devices.len();
+            devices.retain(|d| {
+                d.registered_version_code.is_empty() || d.registered_version_code == current_version
+            });
+            let retired = before - devices.len();
+            if retired > 0 {
+                log::warn!(
+                    "retired {retired} device(s) registered under a different upstream version \
+                     (now {current_version})"
+                );
+            }
+        }
         Ok(Arc::new(DevicePool {
             file,
+            strict_key,
             state: Arc::new(Mutex::new(PoolState {
                 devices,
                 version: 0,
@@ -306,6 +403,26 @@ impl DevicePool {
             maintenance_lock: Arc::new(Mutex::new(())),
             commit: Arc::new(CommitGate::new()),
         }))
+    }
+
+    /// Picks a pooled identity other than [device_id] without registering.
+    ///
+    /// Playback rotation uses this to spend an already-registered standby
+    /// identity before paying for a fresh registration. A pool that only holds
+    /// the failing device returns an error so the caller can decide whether a
+    /// registration round trip still fits its deadline. Usage counters are
+    /// deliberately left alone: a standby handed out here is not evidence the
+    /// identity was spent.
+    pub async fn get_excluding(&self, device_id: &str) -> Result<Device, String> {
+        let picked = {
+            let mut s = self.state.lock().await;
+            s.devices.sort_by(|a, b| a.last_used.cmp(&b.last_used));
+            s.devices
+                .iter()
+                .find(|device| device.device_id != device_id && !device.secret_key.is_empty())
+                .cloned()
+        };
+        picked.ok_or_else(|| format!("no alternate device besides {device_id}"))
     }
 
     /// Least-recently-used device, refilling the pool when needed.
@@ -518,6 +635,36 @@ impl DevicePool {
         Err(format!("replace device {device_id}: exhausted retries"))
     }
 
+    /// Removes a device that upstream silently rejected and tops the pool up in
+    /// the background. Unlike `replace_failed`, this does not wait for a new
+    /// registration, so a request that already has another usable stream can
+    /// finish without paying another device-registration round trip.
+    pub async fn quarantine(self: &Arc<Self>, device_id: &str) -> bool {
+        let removed = {
+            let mut state = self.state.lock().await;
+            match state
+                .devices
+                .iter()
+                .position(|device| device.device_id == device_id)
+            {
+                Some(index) => {
+                    state.devices.remove(index);
+                    state.dirty = true;
+                    true
+                }
+                None => false,
+            }
+        };
+        if !removed {
+            return false;
+        }
+        if let Err(error) = self.save().await {
+            log::warn!("quarantine device: failed to persist pool: {error}");
+        }
+        self.schedule_refill();
+        true
+    }
+
     /// Retires the pool: from the moment this returns, no commit belonging to
     /// this instance can replace the device file.
     ///
@@ -700,6 +847,19 @@ impl DevicePool {
         if self.is_retired() {
             return Ok(());
         }
+        if let Some(key) = &self.strict_key {
+            if pool_crypto::pool_key().as_ref() != Some(&**key) {
+                return Err("Linux device pool key changed; refusing save".into());
+            }
+            // Preserve an externally replaced/wrong-key file rather than overwrite it.
+            match tokio::fs::read(&self.file).await {
+                Ok(data) if pool_crypto::pool_file_is_encrypted(&data) => {
+                    pool_crypto::decrypt_pool_file_with_key(&data, key)?;
+                }
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.to_string()),
+                _ => {}
+            }
+        }
         // Clone the state under the lock, but serialize and encrypt outside it:
         // every device pick takes this lock, and a full-pool JSON dump plus
         // AES/HMAC is far more expensive than the pick itself.
@@ -723,7 +883,9 @@ impl DevicePool {
         // is also what migrates a legacy plaintext file to encrypted
         // on the first save after provisioning. With no key, keep
         // the old plaintext behavior and warn once per process.
-        let (data, plaintext_without_key) = if pool_crypto::pool_key().is_some() {
+        let (data, plaintext_without_key) = if let Some(key) = &self.strict_key {
+            (pool_crypto::encrypt_pool_file_with_key(&json, key)?, false)
+        } else if pool_crypto::pool_key().is_some() {
             (pool_crypto::encrypt_pool_file(&json)?, false)
         } else {
             static WARNED: std::sync::Once = std::sync::Once::new();
