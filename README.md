@@ -3,7 +3,7 @@
 把 [fqapp](https://github.com/ch6vip/fqapp) 的后端（Rust 核心）移植为**独立 HTTP 服务**，
 让前端可以多平台复用、前后端分离、并接入第三方工具。
 
-当前状态：**v0.1.0**。后端功能完整、可部署；业务代码 95% 原样搬自上游。
+当前状态：**v0.2.0**。后端功能完整、可部署；业务代码 95% 原样搬自上游。
 
 ## 快速开始
 
@@ -29,6 +29,7 @@ data/
 ├─ config/filter.json       # 同上
 ├─ config/device_pool.json  # 设备池，AES-256-CBC + HMAC-SHA256 加密
 ├─ pool.key                 # 池加密密钥（64 hex 字符）
+├─ tokens.json              # 管理页添加的令牌（启动参数给的令牌不落盘）
 ├─ src/                     # 媒体缓存
 └─ rust.log                 # 核心日志，1 MiB 轮转
 ```
@@ -36,6 +37,33 @@ data/
 **`pool.key` 丢了就等于丢了全部设备身份**：服务端会拒绝启动而不是重新生成密钥
 （新密钥打不开旧池，池会以空状态加载，然后重注册一批新设备）。请和 `device_pool.json`
 一起备份。也可以用 `FQ_POOL_KEY` 从外部注入，此时不需要 `pool.key` 文件。
+
+### 上游身份（`config.json`，可选）
+
+`<data-dir>/config/config.json` 的 `upstream` 段用于在上游升版本时调整**设备注册**指纹，
+不必重新编译：
+
+```json
+{
+  "algorithm_type": "8404",
+  "port": 0,
+  "upstream": {
+    "version_name": "7.1.3.32",
+    "version_code": 71332,
+    "user_agent": "com.phoenix.read/{version_code} (Linux; U; Android {os_version}; {device_type})"
+  }
+}
+```
+
+- 段缺失、写 `null` 或字段留空时回落到内置的 `6.5.1.32` / `65132`，与旧版本逐字节一致。
+- `version_name` 与 `version_code` 是同一版本号的两种写法，只配一个会拒绝启动；
+  `manifest_version_code`、`update_version_code` 未写时跟随 `version_code`。
+- 未知字段、非对象形状同样是启动错误，避免"改了配置看起来没生效"。
+- `user_agent` 支持 `{version_code}`（别名 `{manifest_version_code}`）、`{os_version}`、
+  `{device_type}` 占位符；整段留空则使用内置模板。
+- 改版本号后，池里用其他版本号注册的设备会在下次启动时退役并重新注册（旧池文件里该字段
+  为空表示"版本未知"，会保留，不会整池清空）。该段只影响设备注册；书籍、搜索、视频等
+  端点仍带各自的固定版本号。
 
 ### 参数
 
@@ -48,9 +76,11 @@ data/
 | `--max-concurrency` | `60` | 在途请求上限，超出的排队 |
 | `--timeout` | `60` | 单请求秒数上限 |
 | `--cors-origin` | 无 | 允许的跨域源，可重复或用逗号分隔 |
+| `--upstream-origin` | 无 | 把所有上游请求改写到该地址（离线测试 / 自建 mock 上游） |
 
 同名环境变量为 `FQ_DATA_DIR`、`FQ_LISTEN`、`FQ_API_TOKENS`、`FQ_ANONYMOUS_READ`、
-`FQ_MAX_CONCURRENCY`、`FQ_TIMEOUT_SECS`、`FQ_CORS_ORIGINS`、`FQ_POOL_KEY`。
+`FQ_MAX_CONCURRENCY`、`FQ_TIMEOUT_SECS`、`FQ_CORS_ORIGINS`、`FQ_UPSTREAM_ORIGIN`、
+`FQ_POOL_KEY`。
 
 ### 鉴权
 
@@ -150,10 +180,10 @@ scripts/smoke.sh fqapi-lite-api:local
 crates/fqapi-core/     # 从 fqapp/rust 移植的核心（业务代码 95% 原样）
   src/runtime/         # 进程级状态：init / shutdown / 取消 / 超时
   src/dispatch.rs      # 唯一分发器（Request -> Response，HTTP 形状）
-  src/endpoints/       # 53 条 /api/v1/* 路由与业务 handler（含书旗 4 条）
-  src/sign/            # x-argus / x-ladon / x-gorgon / simon / sm3
+  src/endpoints/       # 53 个端点 / 67 条路径（含书旗 4 条）
+  src/sign/            # x-argus / x-ladon / x-gorgon / simon / sm3 / 短剧 V5
   src/device/          # 设备池 + 四步注册 + 池文件加密
-  src/upstream/        # 带签名的 HTTP、设备轮换、CM/DH 握手
+  src/upstream/        # 带签名的 HTTP、设备轮换、CM/DH 握手、播放门与预算
   tests/ testdata/     # 与上游逐字节一致，是移植正确性的锚点
 crates/fqapi-server/   # HTTP 外壳（新增）
   src/config.rs        # 命令行 / 环境变量

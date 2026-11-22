@@ -247,7 +247,7 @@ done
 
 基准下 99 个文件逐字节一致，其余分成两类。
 
-**A. 本项目的偏离（§3.3 登记，共 7 个文件）**：
+**A. 本项目的偏离（§3.3 登记，共 8 个文件）**：
 
 ```
 src/lib.rs            src/runtime/mod.rs     src/server.rs
@@ -277,8 +277,8 @@ Phase 0 时 47 个源文件逐字节一致；Phase 2 之后 `server.rs` 与 `dev
 `sign/`（约 1,300 行）始终未动。`src/endpoints/video/**` 与
 `src/device/persistence_tests.rs` 与上游逐字节一致。
 
-2026-11-21 的第三、四批（§1.4 / §1.5）把偏离文件定为七个：上面六个加 `config.rs`
-（测试路径）；`network.rs` 的一行 `allow` 使总数成为八处登记，但按文件算是第七个。
+2026-11-21 的第三、四批（§1.4 / §1.5）把偏离文件定为八个：上面六个加 `config.rs`
+（删掉读 APK 资产的单测，见 §3.3 / §4.12）与 `network.rs`（一行 `allow`）。
 `upstream/client.rs` 的临时小改已随上游文件覆盖而消失。
 
 ---
@@ -741,7 +741,11 @@ header），并给媒体响应加 `Referrer-Policy: no-referrer` 与 `Cache-Cont
 | 6 | `device/crypto.rs` | `TT_FIXED_STRING_B64` / `TT_MAGIC` | device_register 请求加密 |
 | 7 | `device/crypto.rs` | `REGISTER_KEY_REQ_KEY_B64` | registerkey 请求加密 |
 | 8 | `device/register.rs` | `SDK_VERSION`、`PKG_NAME` | 注册指纹 |
+| 9 | `sign/v5.rs` | `APP_ID = 8662`、`VERSION_CODE = "74332"`、`LICENSE = 646_637_794`、`SIGN_KEY`、`MAGIC`；`sign/v5_tables.rs` 的 `HASH_TABLE` / `SBOX` | 短剧 V5 播放签名（`v04.10.03`），与上面的番茄签名链相互独立 |
+
+播放链失效（`/api/v1/videos/{id}` 稳定 500 或空 body）时先核对第 9 项；它是第 8 批新增的
+独立协议版本，不随 `sign/argus.rs` 的常量一起更新。
 
 验证方式：`rust/testdata/vectors.json` 与 `crypto_vectors.rs` 是独立参考实现产出的
 黄金向量。换常量后先跑 `cargo test --test crypto_vectors`，确认签名算法本身没被改坏，
-再用真实上游请求验证。
+再用真实上游请求验证。V5 的离线契约在 `tests/playback_recovery.rs`（mock 上游）。
