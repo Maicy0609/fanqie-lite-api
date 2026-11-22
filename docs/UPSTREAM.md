@@ -130,7 +130,9 @@ fqapp/rust/Cargo.toml    →  crates/fqapi-core/Cargo.toml  (已裁剪，见 §3
 2. 新增 `Device` 字段后，`upstream/client.rs` 里测试用的 `Device { .. }` 字面量要补字段。
    第 8 批已整文件取上游 `client.rs`，这处临时小改随之消失（上游自己补了同样的值）。
 3. `config.rs` 新增的单测读的是 APK 资产 `../assets/config/config.json`，本项目没有该目录，
-   改指向 `data/config/config.json`（见 §3.3）。
+   早期改指向 `data/config/config.json`；但 `data/` 是运行时目录、不进仓库，CI 检出后该文件
+   不存在（2026-11-21 的两次 CI 因此失败）。该单测已删除，守卫移到 `fqapi-server` 的
+   `the_seeded_config_parses`（见 §3.3 / §4.12）。
 
 ### 1.5 第四批（2026-11-21，L3 短剧 V5 播放链）
 
@@ -224,7 +226,7 @@ Phase 0 的目标是"骨架，不改行为"。因此偏离只有"删掉不存在
 | 4 | `src/core_log.rs` | `log()` 写完文件后把同一行 `println!` 到 stdout（3 行） | **有**：容器只采集 stdout，否则 `docker logs` 里看不到任何核心诊断 |
 | 0 | `Cargo.toml` | 删 `flutter_rust_bridge`、`android_logger`、`[build-dependencies] cc`、`crate-type` 改为 `["rlib"]`；第 8 批恢复 `reqwest` 的 `socks` feature 与 `[target.'cfg(any(windows, target_os = "linux"))'.dependencies] reqwest/blocking`（`network.rs` 需要） | 无 |
 | 0 | 根 `Cargo.toml` | 新增 workspace；`[profile.*]` 从成员清单移到根（Cargo 只认根 profile） | 无 |
-| 增量 | `src/config.rs` | `the_shipped_config_json_still_parses` 的路径由 `../assets/config/config.json` 改为 `../../data/config/config.json`，并去掉 `port != 0` 断言（本项目的配置文件把 `port` 留 0，监听地址走 `--listen`） | 无（测试只校验"随仓库发布的配置仍能解析"） |
+| 增量 | `src/config.rs` | 删掉 `the_shipped_config_json_still_parses`：上游读 APK 资产 `../assets/config/config.json`，而本项目没有随仓库发布的配置文件（`data/` 是运行时目录，被 `.gitignore` 忽略，CI 检出后不存在）。同一份默认配置的解析已由 `an_absent_upstream_section_falls_back_to_the_previous_constants` 覆盖；"首次启动写出的配置仍能解析"移到 `crates/fqapi-server/src/main.rs` 的 `the_seeded_config_parses`，直接解析 `prepare_data_dir` 写出的文件 | 无（守卫从"读一个不存在的文件"改为"解析真正写出的文件"） |
 | 增量 | `src/lib.rs` | 加 `mod network;`（上游写在 `pub mod json;` 之后，同一位置） | 无（模块私有，同上游） |
 | 增量 | `src/network.rs` | `Policy::configure_blocking` 加 `#[allow(dead_code)]` 与一行注释 | 无（唯一调用方 `desktop_fetch` 未搬，服务端永远不走 blocking 客户端） |
 
@@ -583,8 +585,9 @@ registers it"；还原后检查恢复通过。注意 `register_all` 漏调 `shuq
 | 接口文档契约 | `python scripts/check_api_doc.py` | OK：67 条路径 / 54 个路由段 / 53 个注册 api |
 | 逐字节一致性 | §3.4 的 blob 脚本 | 84 个一致；差异只落在 §3.3（8 个）与 §3.4-B（V5 未搬） |
 
-本轮只有一处测试需要改动，且属于**换路径**而非改断言：`config.rs` 的
-`the_shipped_config_json_still_parses`（见 §3.3）。其余 `tests/**` 与 `testdata/**`
+本轮只有一处测试需要改动：`config.rs` 的 `the_shipped_config_json_still_parses` 改写路径后
+在 CI 上读不到文件，随后被删除并改成 `fqapi-server` 的 `the_seeded_config_parses`
+（见 §3.3 / §4.12）。其余 `tests/**` 与 `testdata/**`
 仍然与上游逐字节一致 —— 新增的 27 个用例全部来自上游文件本身
 （`device/persistence_tests.rs` 的版本退役与严格模式、`tests/static_and_loopback.rs`
 的 body 转发、`endpoints/config.rs` 的严格解析）。
@@ -625,6 +628,44 @@ registers it"；还原后检查恢复通过。注意 `register_all` 漏调 `shuq
 （识别空门、回退、冷却、换身份）都已在 `rust.log` 里可观测；剩下的是出口 IP / 身份
 被上游风控挡住，属 `PORTING-ANALYSIS.md` §9.2 已登记的边界，不是代码问题。
 离线契约由 `tests/playback_recovery.rs`（32 个用例，mock 上游）覆盖。
+
+### 4.12 CI 首跑失败与修复（2026-11-22）
+
+第 7/8 批推送后，`ci` 的 `cargo test` job 连续两次失败（run `44913492131` / `44914356524`）；
+`fmt + clippy`、`api doc + client`、`container` 均通过，`end-to-end` 因 `needs: test` 被跳过。
+
+```
+---- config::tests::the_shipped_config_json_still_parses stdout ----
+thread 'config::tests::the_shipped_config_json_still_parses' panicked at
+crates/fqapi-core/src/config.rs:370:69:
+read .../crates/fqapi-core/../../data/config/config.json:
+No such file or directory (os error 2)
+test result: FAILED. 159 passed; 1 failed
+```
+
+根因：`data/` 是运行时目录（`.gitignore` 的 `/data/`），CI 检出后没有
+`data/config/config.json`；该单测照搬自上游（上游读 APK 资产 `assets/config/config.json`），
+改路径后仍然依赖一个不进仓库的文件。本地通过只是因为工作区里恰好有这个文件。
+
+修复：删除该单测。同一份默认配置的解析已由
+`an_absent_upstream_section_falls_back_to_the_previous_constants` 用相同字节覆盖；
+"首次启动写出的文件仍能解析"这个真正会让发布起不来的守卫移到 `fqapi-server` ——
+`the_seeded_config_parses` 先让 `prepare_data_dir` 生成文件，再用 `Config::load` 解析。
+负向验证：把 seed 字符串改成非法 JSON，该用例失败；还原后通过。
+
+本机验证（rustc 1.98.1）：
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 格式 | `cargo fmt --all -- --check` | 通过 |
+| 严格 lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | 通过，零警告 |
+| 全量测试 | `cargo test --workspace --locked` | **372 passed / 0 failed / 2 ignored** |
+| 接口文档契约 | `python scripts/check_api_doc.py` | OK：67 条路径 / 54 个路由段 / 53 个注册 api |
+| 客户端单测 | `python -m unittest`（`clients/python`） | 8 passed |
+| 端到端 | `python clients/python/e2e.py --binary target/debug/fqapi-server` | 7 项全过，文档 67 条路径全部非 404 |
+
+本机跑 e2e 时 `find_binary` 优先取 `target/release/`；如果那个二进制早于新增路由，
+活体探测会误报 404。CI 只构建 debug，不受影响；本机复现请显式传 `--binary target/debug/...`。
 
 ---
 

@@ -228,6 +228,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A fresh deployment must be able to parse the file it seeds. The guard
+    /// used to live in `fqapi_core::config` and read `data/config/config.json`,
+    /// which does not exist in a checkout (`data/` is runtime state), so CI
+    /// failed with ENOENT. Checking the file `prepare_data_dir` actually writes
+    /// keeps the guard where the bytes are produced.
+    #[test]
+    fn the_seeded_config_parses() {
+        let dir = temp_dir("seed-parse");
+        let paths = prepare_data_dir(&config(dir.clone())).expect("prepare");
+        let path = paths.config.to_str().expect("utf-8 path");
+        let parsed = fqapi_core::config::Config::load(path)
+            .expect("the config a fresh deployment starts from must parse");
+        // The seeded config configures no upstream identity, so the built-in
+        // constants apply.
+        assert_eq!(parsed.upstream.resolved().version_code, "65132");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn existing_files_are_never_overwritten() {
         let dir = temp_dir("keep");

@@ -206,7 +206,7 @@ api.media_url("/src/img_abc.jpg")   # 自动带上 ?token=
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                      # 313 passed（2 ignored）
+cargo test --workspace                      # 372 passed（2 ignored）
 python scripts/check_api_doc.py             # docs/API.md 与源码一致
 python clients/python/e2e.py                # 真二进制 + 模拟上游 + 客户端
 ```

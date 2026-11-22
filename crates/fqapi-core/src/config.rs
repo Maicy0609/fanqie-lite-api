@@ -355,26 +355,6 @@ mod tests {
         assert_eq!(config.upstream.version_name, "7.1");
     }
 
-    /// The configuration that actually ships with this repository must keep
-    /// parsing. The upstream section is strict about its shape and its field
-    /// names, so this is the guard that a stricter parser does not brick a
-    /// release.
-    ///
-    /// Upstream reads its APK asset (`assets/config/config.json`); this port
-    /// ships the server copy under `data/`, so only the path differs. The port
-    /// assertion is dropped with it: the server's file leaves `port` at 0 and
-    /// takes the listener address from `--listen` instead.
-    #[test]
-    fn the_shipped_config_json_still_parses() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/config/config.json");
-        let body = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
-        let config: Config =
-            serde_json::from_str(&body).unwrap_or_else(|e| panic!("parse {path}: {e}"));
-        // The shipped config configures no upstream identity, so the built-in
-        // constants apply.
-        assert_eq!(config.upstream.resolved().version_code, "65132");
-    }
-
     /// A mistyped field name must not be silently ignored: `useragent` instead
     /// of `user_agent` would leave the user agent at its built-in template and
     /// the change would look like it had no effect, with nothing reported.
