@@ -22,11 +22,14 @@ Options:
   --timeout <secs>         Per-request deadline in seconds (default 60)
   --cors-origin <origin>   Allowed CORS origin; repeatable or comma-separated
   --upstream-origin <url>  Redirect every upstream call (offline testing)
+  --pretty-json            Indent JSON responses (debugging; changes the bytes)
+  --gzip-json              gzip JSON responses when the client accepts it
   -h, --help               Show this help
 
 Environment (used when the matching flag is absent):
   FQ_DATA_DIR  FQ_LISTEN  FQ_API_TOKENS  FQ_ANONYMOUS_READ
   FQ_MAX_CONCURRENCY  FQ_TIMEOUT_SECS  FQ_CORS_ORIGINS  FQ_UPSTREAM_ORIGIN
+  FQ_PRETTY_JSON  FQ_GZIP_JSON
 ";
 
 #[derive(Debug, Clone)]
@@ -43,6 +46,12 @@ pub struct Config {
     pub cors_origins: Vec<String>,
     /// Offline test seam, passed straight to the core. Empty in normal use.
     pub upstream_origin: String,
+    /// Indent JSON bodies. Off by default: programmatic clients may rely on
+    /// the exact bytes the upstream produced, and pretty-printing changes them.
+    pub pretty_json: bool,
+    /// gzip JSON responses for clients that send `Accept-Encoding`. Off by
+    /// default so the wire format matches what earlier releases sent.
+    pub gzip_json: bool,
 }
 
 pub enum ParseOutcome {
@@ -68,6 +77,8 @@ pub fn parse_from(
     let mut timeout_secs: Option<u64> = None;
     let mut cors_origins: Vec<String> = Vec::new();
     let mut upstream_origin: Option<String> = None;
+    let mut pretty_json = false;
+    let mut gzip_json = false;
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -96,6 +107,8 @@ pub fn parse_from(
             }
             "--cors-origin" => push_list(&mut cors_origins, &value("--cors-origin")?),
             "--upstream-origin" => upstream_origin = Some(value("--upstream-origin")?),
+            "--pretty-json" => pretty_json = true,
+            "--gzip-json" => gzip_json = true,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -115,6 +128,12 @@ pub fn parse_from(
     }
     if !anonymous_read {
         anonymous_read = matches!(env("FQ_ANONYMOUS_READ").as_deref(), Some("1" | "true"));
+    }
+    if !pretty_json {
+        pretty_json = matches!(env("FQ_PRETTY_JSON").as_deref(), Some("1" | "true"));
+    }
+    if !gzip_json {
+        gzip_json = matches!(env("FQ_GZIP_JSON").as_deref(), Some("1" | "true"));
     }
     if let Some(raw) = env("FQ_CORS_ORIGINS") {
         push_list(&mut cors_origins, &raw);
@@ -157,6 +176,8 @@ pub fn parse_from(
         upstream_origin: upstream_origin
             .or_else(|| env("FQ_UPSTREAM_ORIGIN"))
             .unwrap_or_default(),
+        pretty_json,
+        gzip_json,
     })))
 }
 
@@ -203,6 +224,24 @@ mod tests {
     fn tokens_accept_repeats_and_commas_without_duplicates() {
         let cfg = run(&["--token", "a,b", "--token", "b", "--token", "c"], &[]).expect("tokens");
         assert_eq!(cfg.tokens, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn response_encoding_flags_are_opt_in() {
+        let cfg = run(&[], &[]).expect("defaults");
+        assert!(!cfg.pretty_json, "pretty-printing must be opt-in");
+        assert!(!cfg.gzip_json, "compression must be opt-in");
+
+        let cfg = run(&["--pretty-json", "--gzip-json"], &[]).expect("flags");
+        assert!(cfg.pretty_json);
+        assert!(cfg.gzip_json);
+
+        let cfg = run(&[], &[("FQ_PRETTY_JSON", "1"), ("FQ_GZIP_JSON", "true")]).expect("env");
+        assert!(cfg.pretty_json);
+        assert!(cfg.gzip_json);
+
+        let cfg = run(&[], &[("FQ_PRETTY_JSON", "0")]).expect("env off");
+        assert!(!cfg.pretty_json, "only 1/true enable a flag");
     }
 
     #[test]

@@ -18,6 +18,7 @@
 | 路径不存在 | `404` 同上信封 |
 | 上游失败 / 解密失败 | `500` 同上信封 |
 | 超时 / 取消 | `504` / `499` |
+| 响应编码 | 默认紧凑 JSON、不压缩。`--gzip-json` 时按 `Accept-Encoding` 协商 gzip（仅 `application/json`，带 `Vary`）；`--pretty-json` 时缩进 `/api/v1/*` 的 JSON；两项都可单独开关 |
 
 路径里的 `{id}` 都是上游的 id（数字字符串），不是本地自增。
 

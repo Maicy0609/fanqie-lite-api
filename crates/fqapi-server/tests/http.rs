@@ -5,6 +5,7 @@
 //! and a local mock upstream. Nothing here touches the network, a real device,
 //! or process-global state - which is also why these tests can run in parallel.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -185,7 +186,15 @@ async fn mock_upstream() -> (String, tokio::task::JoinHandle<()>) {
 async fn mock_handler(request: axum::extract::Request) -> AxumResponse {
     let path = request.uri().path().to_string();
     let body = if path.contains("/search/") {
-        json!({ "code": 0, "data": { "books": [{ "book_id": "1", "title": "mock" }] } })
+        json!({
+            "code": 0,
+            "data": {
+                "books": [{ "book_id": "1", "title": "mock" }],
+                // Large enough that gzip is a win and clears the layer's
+                // minimum-size floor; real search responses are KBs too.
+                "summary": "x".repeat(2048),
+            }
+        })
     } else {
         json!({ "code": 0, "data": {} })
     };
@@ -197,6 +206,16 @@ async fn mock_handler(request: axum::extract::Request) -> AxumResponse {
 }
 
 async fn start(token: &str, anonymous_read: bool, devices: usize) -> Harness {
+    start_with(token, anonymous_read, devices, false, false).await
+}
+
+async fn start_with(
+    token: &str,
+    anonymous_read: bool,
+    devices: usize,
+    pretty_json: bool,
+    gzip_json: bool,
+) -> Harness {
     install_crypto_provider();
     let dir = temp_dir(if anonymous_read { "anon" } else { "auth" });
     seed_pool(&dir, devices);
@@ -212,6 +231,8 @@ async fn start(token: &str, anonymous_read: bool, devices: usize) -> Harness {
         timeout: Duration::from_secs(10),
         cors_origins: Vec::new(),
         upstream_origin: String::new(),
+        pretty_json,
+        gzip_json,
     };
     let app = router(AppState::from_config(server, &cfg)).expect("router");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -303,6 +324,100 @@ async fn api_with_a_token_reaches_the_upstream() {
     assert_eq!(
         body["data"]["books"][0]["title"], "mock",
         "the response must be the upstream payload, unchanged: {body}"
+    );
+}
+
+#[tokio::test]
+async fn pretty_json_is_opt_in() {
+    let h = start_with("secret", false, 5, true, false).await;
+    let response = client()
+        .get(h.url("/api/v1/search?query=x"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("get");
+    let text = response.text().await.expect("body");
+    assert!(
+        text.contains("\n  \""),
+        "pretty output must be indented: {text}"
+    );
+    let body: Value = serde_json::from_str(&text).expect("still JSON");
+    assert_eq!(body["data"]["books"][0]["title"], "mock");
+
+    // The default stays byte-compact: a programmatic client that hashes or
+    // diffs the payload must not see a different body.
+    let h = start("secret", false, 5).await;
+    let response = client()
+        .get(h.url("/api/v1/search?query=x"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("get");
+    let compact = response.text().await.expect("body");
+    assert!(!compact.contains('\n'), "default output must stay compact");
+    assert_eq!(
+        serde_json::from_str::<Value>(&compact).expect("json"),
+        serde_json::from_str::<Value>(&text).expect("json"),
+        "both forms must carry the same document"
+    );
+}
+
+#[tokio::test]
+async fn gzip_json_negotiates_and_leaves_media_alone() {
+    let h = start_with("secret", false, 5, true, true).await;
+
+    let response = client()
+        .get(h.url("/api/v1/search?query=x"))
+        .bearer_auth("secret")
+        .header("accept-encoding", "gzip")
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(header(&response, "content-encoding"), "gzip");
+    assert!(
+        header(&response, "vary")
+            .to_ascii_lowercase()
+            .contains("accept-encoding"),
+        "a cache must know the representation varies: {}",
+        header(&response, "vary")
+    );
+    let raw = response.bytes().await.expect("body");
+    let mut text = String::new();
+    flate2::read::GzDecoder::new(&raw[..])
+        .read_to_string(&mut text)
+        .expect("gunzip");
+    assert!(
+        text.contains("\n  \""),
+        "pretty and gzip must compose: {text}"
+    );
+    let body: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(body["data"]["books"][0]["title"], "mock");
+
+    // No Accept-Encoding, no compression: a client that cannot decode gzip
+    // must keep receiving plain JSON.
+    let response = client()
+        .get(h.url("/api/v1/search?query=x"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(header(&response, "content-encoding"), "");
+
+    // Media is not JSON: it must stream through untouched even though the
+    // client accepts gzip and the body is well above the size floor.
+    let payload = vec![b'x'; 4096];
+    let path = h.media("clip.mp4", &payload);
+    let response = client()
+        .get(h.url(&path))
+        .bearer_auth("secret")
+        .header("accept-encoding", "gzip")
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(header(&response, "content-encoding"), "");
+    assert_eq!(
+        response.bytes().await.expect("media").as_ref(),
+        payload.as_slice()
     );
 }
 

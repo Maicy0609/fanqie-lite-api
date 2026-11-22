@@ -77,10 +77,12 @@ data/
 | `--timeout` | `60` | 单请求秒数上限 |
 | `--cors-origin` | 无 | 允许的跨域源，可重复或用逗号分隔 |
 | `--upstream-origin` | 无 | 把所有上游请求改写到该地址（离线测试 / 自建 mock 上游） |
+| `--pretty-json` | 关 | 缩进 `/api/v1/*` 的 JSON 响应（调试用；会改变响应字节） |
+| `--gzip-json` | 关 | 按 `Accept-Encoding` 对 JSON 响应 gzip 压缩 |
 
 同名环境变量为 `FQ_DATA_DIR`、`FQ_LISTEN`、`FQ_API_TOKENS`、`FQ_ANONYMOUS_READ`、
 `FQ_MAX_CONCURRENCY`、`FQ_TIMEOUT_SECS`、`FQ_CORS_ORIGINS`、`FQ_UPSTREAM_ORIGIN`、
-`FQ_POOL_KEY`。
+`FQ_PRETTY_JSON`、`FQ_GZIP_JSON`、`FQ_POOL_KEY`。
 
 ### 鉴权
 
@@ -114,6 +116,28 @@ curl -H "Range: bytes=0-1023" \
 
 `?token=` 只在 `/src/*` 生效，打 API 会被拒绝。响应带 `Referrer-Policy: no-referrer`
 和 `Cache-Control: private`，避免这条 URL 从 referrer 或共享缓存里漏出去。
+
+### 响应编码（可选）
+
+两项都默认关闭，对现有客户端零影响：
+
+| 开关 | 作用 |
+|---|---|
+| `--pretty-json` / `FQ_PRETTY_JSON=1` | 把核心转发的 `application/json` 响应重新缩进，方便浏览器直连排查字段 |
+| `--gzip-json` / `FQ_GZIP_JSON=1` | 按 `Accept-Encoding` 对 JSON 响应做 gzip，响应带 `Vary: Accept-Encoding` |
+
+- 只处理**核心转发的缓冲 JSON**（`/api/v1/*`，含 `/src` 的错误信封）：媒体文件、`/admin`
+  页面和探针响应原样透传；JSON 解析失败时也原样返回，不会把一条能用的响应变成错误。
+- 压缩只覆盖 `application/json` 且大于 256 字节；媒体和已压缩内容跳过。压缩级别保持
+  tower-http 默认值，不追高压比。
+- 美化会改变响应字节，程序化客户端如果按字节比对就不要开；两个开关可以同时用，
+  客户端解压后看到的是美化后的 JSON。
+
+```bash
+# 浏览器之外想看缩进后的 JSON（curl 会自动解压）
+curl --compressed -H "Authorization: Bearer <token>" \
+     "http://127.0.0.1:18921/api/v1/search?query=%E5%89%91%E6%9D%A5"
+```
 
 ## 部署（Docker）
 
@@ -236,7 +260,7 @@ api.media_url("/src/img_abc.jpg")   # 自动带上 ?token=
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                      # 372 passed（2 ignored）
+cargo test --workspace                      # 376 passed（2 ignored）
 python scripts/check_api_doc.py             # docs/API.md 与源码一致
 python clients/python/e2e.py                # 真二进制 + 模拟上游 + 客户端
 ```

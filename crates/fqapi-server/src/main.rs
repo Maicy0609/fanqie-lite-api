@@ -211,6 +211,8 @@ mod tests {
             timeout: std::time::Duration::from_secs(5),
             cors_origins: Vec::new(),
             upstream_origin: String::new(),
+            pretty_json: false,
+            gzip_json: false,
         }
     }
 

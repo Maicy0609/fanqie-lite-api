@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Request, State};
-use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::http::{header, Extensions, HeaderMap, HeaderValue, Method, StatusCode, Version};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{middleware, Router};
@@ -20,6 +20,8 @@ use fqapi_core::dispatch::{self, ResponseBody};
 use fqapi_core::endpoints::Server;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
+use tower_http::compression::predicate::{Predicate, SizeAbove};
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::auth;
@@ -47,6 +49,11 @@ pub struct AppState {
     pub semaphore: Arc<tokio::sync::Semaphore>,
     pub timeout: Duration,
     pub cors_origins: Vec<String>,
+    /// Indent JSON bodies (`--pretty-json`). Media and admin HTML are never
+    /// reformatted: only `ResponseBody::Bytes` with a JSON content type is.
+    pub pretty_json: bool,
+    /// Compress JSON responses for clients that accept gzip (`--gzip-json`).
+    pub gzip_json: bool,
 }
 
 impl AppState {
@@ -62,6 +69,8 @@ impl AppState {
             semaphore: Arc::new(tokio::sync::Semaphore::new(cfg.max_concurrency)),
             timeout: cfg.timeout,
             cors_origins: cfg.cors_origins.clone(),
+            pretty_json: cfg.pretty_json,
+            gzip_json: cfg.gzip_json,
         }
     }
 }
@@ -90,6 +99,19 @@ pub fn router(state: AppState) -> Result<Router, String> {
 
     if let Some(cors) = cors_layer(&state.cors_origins)? {
         app = app.layer(cors);
+    }
+    if state.gzip_json {
+        // JSON only: media (`/src/*`) and the admin page stream through
+        // untouched, and gzip framing costs more than it saves below the
+        // floor. The layer is outside the handler, so the client decompresses
+        // to whatever `--pretty-json` produced.
+        let json_only = |_: StatusCode, _: Version, headers: &HeaderMap, _: &Extensions| {
+            headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("application/json"))
+        };
+        app = app.layer(CompressionLayer::new().compress_when(SizeAbove::new(256).and(json_only)));
     }
     Ok(app.with_state(state))
 }
@@ -182,7 +204,7 @@ async fn dispatch_handler(State(state): State<AppState>, request: Request) -> Re
     drop(permit);
 
     let mut response = match outcome {
-        Ok(response) => to_http(response).await,
+        Ok(response) => to_http(response, state.pretty_json).await,
         Err(_) => json_error(StatusCode::GATEWAY_TIMEOUT, "timeout"),
     };
     if media {
@@ -201,19 +223,47 @@ async fn dispatch_handler(State(state): State<AppState>, request: Request) -> Re
     response
 }
 
+/// Re-indents a buffered JSON body when `--pretty-json` is on.
+///
+/// Only `ResponseBody::Bytes` with a JSON content type is eligible; media
+/// (file) bodies never reach this function. Anything that is not a complete
+/// JSON document is returned byte-for-byte: a readability option must never
+/// turn a working response into a failed one.
+fn maybe_pretty_json(content_type: &str, body: Vec<u8>, enabled: bool) -> Vec<u8> {
+    if !enabled || !content_type.starts_with("application/json") {
+        return body;
+    }
+    match serde_json::from_slice::<serde_json::Value>(&body) {
+        Ok(value) => serde_json::to_vec_pretty(&value).unwrap_or(body),
+        Err(_) => body,
+    }
+}
+
 /// Converts a core response, streaming file bodies instead of buffering them.
-async fn to_http(response: dispatch::Response) -> Response {
-    let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+async fn to_http(response: dispatch::Response, pretty: bool) -> Response {
+    let dispatch::Response {
+        status,
+        content_type,
+        headers,
+        body,
+    } = response;
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    // A buffered body's length is recomputed by hyper; forwarding the core's
+    // value would go stale as soon as pretty-printing changes the bytes.
+    let buffered = matches!(&body, ResponseBody::Bytes(_));
     let mut builder = Response::builder()
         .status(status)
-        .header(header::CONTENT_TYPE, response.content_type.as_str());
-    for (name, value) in &response.headers {
+        .header(header::CONTENT_TYPE, content_type.as_str());
+    for (name, value) in &headers {
+        if buffered && name.eq_ignore_ascii_case("content-length") {
+            continue;
+        }
         builder = builder.header(name.as_str(), value.as_str());
     }
 
-    match response.body {
+    match body {
         ResponseBody::Bytes(bytes) => builder
-            .body(Body::from(bytes))
+            .body(Body::from(maybe_pretty_json(&content_type, bytes, pretty)))
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
         ResponseBody::File {
             path,
@@ -363,5 +413,38 @@ mod tests {
         assert!(cors_layer(&["https://app.example".to_string()])
             .expect("valid")
             .is_some());
+    }
+
+    #[test]
+    fn pretty_json_is_opt_in_and_never_corrupts_a_body() {
+        let compact = br#"{"code":0,"data":{"books":[1,2]}}"#.to_vec();
+        let pretty = maybe_pretty_json("application/json; charset=utf-8", compact.clone(), true);
+        assert_ne!(pretty, compact, "enabled output must be re-indented");
+        assert!(
+            pretty.windows(3).any(|window| window == b"\n  "),
+            "pretty output has no indentation: {}",
+            String::from_utf8_lossy(&pretty)
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&pretty).expect("still JSON"),
+            serde_json::json!({"code": 0, "data": {"books": [1, 2]}})
+        );
+
+        assert_eq!(
+            maybe_pretty_json("application/json", compact.clone(), false),
+            compact,
+            "off by default"
+        );
+        assert_eq!(
+            maybe_pretty_json("text/html", compact.clone(), true),
+            compact,
+            "only JSON content types are eligible"
+        );
+        let broken = b"{not json".to_vec();
+        assert_eq!(
+            maybe_pretty_json("application/json", broken.clone(), true),
+            broken,
+            "malformed JSON must pass through untouched"
+        );
     }
 }
